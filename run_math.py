@@ -11,6 +11,9 @@ from ikv.monkeypatch import replace_llama, replace_qwen2, replace_qwen3
 
 
 def set_seed(seed):
+    """
+    set seed
+    """
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     np.random.seed(seed)
