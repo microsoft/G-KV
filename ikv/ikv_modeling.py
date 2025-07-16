@@ -175,120 +175,6 @@ def Qwen2Attention_forward(
     return attn_output, attn_weights
 
 
-def CausalLM_forward(
-    self,
-    input_ids: torch.LongTensor = None,
-    attention_mask: Optional[torch.Tensor] = None,
-    position_ids: Optional[torch.LongTensor] = None,
-    past_key_values: Optional[Union[Cache, List[torch.FloatTensor]]] = None,
-    inputs_embeds: Optional[torch.FloatTensor] = None,
-    labels: Optional[torch.LongTensor] = None,
-    use_cache: Optional[bool] = None,
-    output_attentions: Optional[bool] = None,
-    output_hidden_states: Optional[bool] = None,
-    return_dict: Optional[bool] = None,
-    cache_position: Optional[torch.LongTensor] = None,
-    logits_to_keep: Union[int, torch.Tensor] = 0,
-    **kwargs,
-) -> Union[Tuple, CausalLMOutputWithPast]:
-    output_attentions = (
-        output_attentions
-        if output_attentions is not None
-        else self.config.output_attentions
-    )
-    output_hidden_states = (
-        output_hidden_states
-        if output_hidden_states is not None
-        else self.config.output_hidden_states
-    )
-    return_dict = (
-        return_dict if return_dict is not None else self.config.use_return_dict
-    )
-
-    # sample-level statistics
-    if len(past_key_values) == 0:
-        if self.config.compression_content == "think":
-            self.after_think = False
-
-    if input_ids.shape[1] > 1:
-        # prefill
-        self.output_length = 0
-    else:
-        # decode
-        self.output_length += input_ids.shape[1]
-
-    # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    outputs = self.model(
-        input_ids=input_ids,
-        attention_mask=attention_mask,
-        position_ids=position_ids,
-        past_key_values=past_key_values,
-        inputs_embeds=inputs_embeds,
-        use_cache=use_cache,
-        output_attentions=output_attentions,
-        output_hidden_states=output_hidden_states,
-        return_dict=return_dict,
-        cache_position=cache_position,
-        **kwargs,
-    )
-
-    hidden_states = outputs[0]
-    # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-    slice_indices = (
-        slice(-logits_to_keep, None)
-        if isinstance(logits_to_keep, int)
-        else logits_to_keep
-    )
-    logits = self.lm_head(hidden_states[:, slice_indices, :])
-
-    # =============== Step-level Compression logic start ===============
-    # assume non-batch input, shape: [1, logits_to_keep, vocab_size]
-    predicted_token_ids = logits[:, -1, :].argmax(dim=-1)
-
-    if self.config.compression_content == "think" and self.after_think == False:
-        self.after_think = (
-            predicted_token_ids[0].cpu().item() in self.after_think_token_ids
-        )
-
-    if self.config.divide_method == "newline":
-        enable_compress = predicted_token_ids[0].cpu().item() in self.newline_token_ids
-    elif self.config.divide_method == "step_length":
-        enable_compress = (
-            self.output_length > 0
-            and self.output_length % self.config.divide_length == 0
-        )
-    else:
-        raise ValueError(f"Invalid divide_method: {self.config.divide_method}")
-
-    if self.config.compression_content == "think" and self.after_think == True:
-        enable_compress = False
-
-    # Set compression flag for all layers at once
-    self.config.compression = enable_compress
-    # =============== Step-level Compression logic end =================
-
-    loss = None
-    if labels is not None:
-        loss = self.loss_function(
-            logits=logits,
-            labels=labels,
-            vocab_size=self.config.vocab_size,
-            **kwargs,
-        )
-
-    if not return_dict:
-        output = (logits,) + outputs[1:]
-        return (loss,) + output if loss is not None else output
-
-    return CausalLMOutputWithPast(
-        loss=loss,
-        logits=logits,
-        past_key_values=outputs.past_key_values,
-        hidden_states=outputs.hidden_states,
-        attentions=outputs.attentions,
-    )
-
-
 def _sample(
     self,
     input_ids: torch.LongTensor,
@@ -390,11 +276,25 @@ def _sample(
             os.environ["TOKENIZERS_PARALLELISM"] = "0"
             model_forward = self.get_compiled_call(generation_config.compile_config)
 
+    output_length = 0
+
     while self._has_unfinished_sequences(
         this_peer_finished, synced_gpus, device=input_ids.device
     ):
         # prepare model inputs
         model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
+
+        # =============== Conduct Compression logic ===============
+
+        if input_ids.shape[1] == 1:
+            # decoding stage
+            output_length += 1
+        # during decoding, conduct compression every divide_length steps
+        # if the prefill length is greater than budget, then the prefilled prompt will be compressed immediately
+
+        enable_compress = output_length % self.config.divide_length == 0
+
+        # =============== Compression logic =================
 
         # prepare variable output controls (note: some models won't accept all output controls)
         model_inputs.update(
@@ -445,9 +345,9 @@ def _sample(
                     else (outputs.hidden_states,)
                 )
 
-        # =============== start update imformative KV ================
+        # =============== start KV compression ================
         past_key_value = model_kwargs.get("past_key_values", None)
-        if self.config.compression:
+        if enable_compress:
             for layer_index in range(len(self.model.layers)):
                 query_states = past_key_value.query_cache[layer_index]
                 key_states = past_key_value.key_cache[layer_index]
@@ -463,16 +363,15 @@ def _sample(
 
                 past_key_value.key_cache[layer_index] = key_states
                 past_key_value.value_cache[layer_index] = value_states
+        # =============== end KV compression ================
 
         # token selection
-
         if do_sample:
             # TODO (joao): this OP throws "skipping cudagraphs due to ['incompatible ops']", find solution
             probs = nn.functional.softmax(next_token_scores, dim=-1)
             next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
         else:
             next_tokens = torch.argmax(next_token_scores, dim=-1)
-        # =============== end compute entropy and update imformative KV ================
 
         # finished sentences should have their next token be a padding token
         if has_eos_stopping_criteria:
@@ -495,11 +394,12 @@ def _sample(
         # Otherwise a reference to outputs is kept which keeps the logits alive in the next iteration
         del outputs
 
-    # clear score cache
+    # =============== clear score cache ================
     for layer in self.model.layers:
         if hasattr(layer.self_attn, "kv_cluster"):
             if hasattr(layer.self_attn.kv_cluster, "cached_score"):
                 layer.self_attn.kv_cluster.cached_score = None
+    # ==================================================
 
     if streamer is not None:
         streamer.end()
