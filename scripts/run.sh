@@ -1,5 +1,5 @@
 set -x
-export CUDA_VISIBLE_DEVICES=6
+export CUDA_VISIBLE_DEVICES=7
 
 # --enable_pooling
 # --suppressing_redundancy
@@ -15,7 +15,7 @@ export CUDA_VISIBLE_DEVICES=6
 
 python3 ./run_math.py \
 --dataset_path ./data/amc23.jsonl \
---save_path ./outputs/amc23_rkv_a095.jsonl \
+--save_path ./outputs/amc23_ikv_mask.jsonl \
 --model_path /data/MaoXiaowei/models/model/deepseek-ai/DeepSeek-R1-Distill-Qwen-1___5B \
 --max_length 16384 \
 --eval_batch_size 160 \
@@ -23,12 +23,7 @@ python3 ./run_math.py \
 --kv_budget 512 \
 --window_size 32 \
 --divide_length 128 \
---num_group 2 \
---enable_score_cache \
---enable_pooling \
---mix_lambda 0.5 \
---suppressing_redundancy \
---alpha 0.95 \
+--cross_salience_score \
 --n_sample 32 \
 --do_sample \
 --top_p 0.95 \

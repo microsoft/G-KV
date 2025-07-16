@@ -7,7 +7,9 @@ import math
 
 
 @torch.no_grad()
-def compute_attention_scores(query_states, key_states, pooling="max"):
+def compute_attention_scores(
+    query_states, key_states, pooling="max", create_casual_mask=True
+):
     """
     query_states: (bsz, q_heads, q_len, head_dim)
     key_states: (bsz, kv_heads, kv_cache_len, head_dim)
@@ -25,9 +27,16 @@ def compute_attention_scores(query_states, key_states, pooling="max"):
     # shape: [batch_size, kv_heads, 1, kv_cache_len, head_dim]
     key_states = key_states.unsqueeze(2)
 
+    # we first normalize the key_states for better numerical stability
     key_states = key_states / math.sqrt(head_dim)
     # shape: [batch_size, kv_heads, query_group_size, q_len, kv_cache_len]
     attn_weights = torch.matmul(query_states, key_states.transpose(3, 4))
+
+    if create_casual_mask:
+        mask = torch.triu(
+            torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
+        ).bool()
+        attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
 
     attn_scores = torch.softmax(
         attn_weights - attn_weights.max(dim=-1, keepdim=True).values, dim=-1
@@ -65,16 +74,21 @@ def cross_salience_score(
             attention_weights.shape[2] % num_group == 0
         ), f"window size {attention_weights.shape[2]} must be divisible by group {num_group}"
         B, H, W, L = attention_weights.shape
+
+        # mean score within each group
         group_attention_weights = attention_weights.view(B, H, num_group, group_size, L)
         all_score = group_attention_weights.mean(dim=3)
-        # shape (B, H, G, G, L)
-        all_score = all_score.unsqueeze(2) * all_score.unsqueeze(3)
+
+        all_score = all_score.unsqueeze(2) * all_score.unsqueeze(
+            3
+        )  # shape (B, H, G, G, L)
+
         # mask the diagonal elements
         mask = torch.eye(all_score.shape[2], device=all_score.device).bool()  # (G, G)
         mask = mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
-        all_score = all_score.masked_fill(mask, 0)
-        # shape (B, H, L)
-        all_score = all_score.mean(dim=(2, 3))
+        all_score = all_score.masked_fill_(mask, 0)
+
+        all_score = all_score.mean(dim=(2, 3))  # shape (B, H, L)
     else:
         all_score = attention_weights.mean(dim=(2))
     return all_score
@@ -145,10 +159,8 @@ class ImformativeKV:
         else:
             # shape: (bsz, num_kv_heads, len, len)
             attn_scores = compute_attention_scores(query_states, key_states)
-            if torch.isnan(attn_scores).any():
-                raise ValueError("attn_scores is nan")
-            if torch.isinf(attn_scores).any():
-                raise ValueError("attn_scores is inf")
+            if torch.isnan(attn_scores).any() or torch.isinf(attn_scores).any():
+                raise ValueError("attn_scores is nan or inf")
 
             # shape: (bsz, num_kv_heads, len)
             if self.cross_salience_score:
@@ -160,7 +172,9 @@ class ImformativeKV:
 
             if self.enable_score_cache:
                 # normalize final_score
-                final_score = final_score / final_score.max(dim=-1, keepdim=True).values
+                final_score = final_score.div_(
+                    final_score.max(dim=-1, keepdim=True).values
+                )
 
             if self.enable_score_cache and self.cached_score is not None:
                 # cached score shape: (bsz, num_kv_heads, cached_score_len)
@@ -187,10 +201,10 @@ class ImformativeKV:
                     retain_direction=self.retain_direction,
                 )[:, : -self.window_size]
 
-                if self.enable_score_cache:
+                if self.enable_score_cache or self.cross_salience_score:
                     # normalize similarity_cos
-                    similarity_cos = (
-                        similarity_cos / similarity_cos.max(dim=-1, keepdim=True).values
+                    similarity_cos = similarity_cos.div_(
+                        similarity_cos.max(dim=-1, keepdim=True).values
                     )
 
                 pooled_score = pooled_score * self.mix_lambda - similarity_cos * (

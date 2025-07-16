@@ -284,18 +284,6 @@ def _sample(
         # prepare model inputs
         model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
-        # =============== Conduct Compression logic ===============
-
-        if input_ids.shape[1] == 1:
-            # decoding stage
-            output_length += 1
-        # during decoding, conduct compression every divide_length steps
-        # if the prefill length is greater than budget, then the prefilled prompt will be compressed immediately
-
-        enable_compress = output_length % self.config.divide_length == 0
-
-        # =============== Compression logic =================
-
         # prepare variable output controls (note: some models won't accept all output controls)
         model_inputs.update(
             {"output_attentions": output_attentions} if output_attentions else {}
@@ -346,6 +334,12 @@ def _sample(
                 )
 
         # =============== start KV compression ================
+
+        # during decoding, conduct compression every divide_length steps
+        # if the prefill length is greater than budget, then the prefilled prompt will be compressed immediately
+
+        enable_compress = output_length % self.config.divide_length == 0
+
         past_key_value = model_kwargs.get("past_key_values", None)
         if enable_compress:
             for layer_index in range(len(self.model.layers)):
@@ -363,6 +357,9 @@ def _sample(
 
                 past_key_value.key_cache[layer_index] = key_states
                 past_key_value.value_cache[layer_index] = value_states
+
+        output_length += 1
+
         # =============== end KV compression ================
 
         # token selection
