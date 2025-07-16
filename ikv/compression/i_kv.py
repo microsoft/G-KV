@@ -8,7 +8,7 @@ import math
 
 @torch.no_grad()
 def compute_attention_scores(
-    query_states, key_states, pooling="max", create_casual_mask=True
+    query_states, key_states, pooling="max"
 ):
     """
     query_states: (bsz, q_heads, q_len, head_dim)
@@ -32,11 +32,10 @@ def compute_attention_scores(
     # shape: [batch_size, kv_heads, query_group_size, q_len, kv_cache_len]
     attn_weights = torch.matmul(query_states, key_states.transpose(3, 4))
 
-    if create_casual_mask:
-        mask = torch.triu(
-            torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
-        ).bool()
-        attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
+    mask = torch.triu(
+        torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
+    ).bool()
+    attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
 
     attn_scores = torch.softmax(
         attn_weights - attn_weights.max(dim=-1, keepdim=True).values, dim=-1
