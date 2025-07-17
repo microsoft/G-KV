@@ -53,7 +53,6 @@ def replace_qwen2(compression_config):
         from .ikv_modeling import (
             Qwen2Attention_init,
             Qwen2Attention_forward,
-            CausalLM_forward,
             _sample,
         )
 
@@ -62,7 +61,6 @@ def replace_qwen2(compression_config):
 
         modeling_qwen2.Qwen2Attention.__init__ = init_wrapper
         modeling_qwen2.Qwen2Attention.forward = Qwen2Attention_forward
-        modeling_qwen2.Qwen2ForCausalLM.forward = CausalLM_forward
         GenerationMixin._sample = _sample
 
 
