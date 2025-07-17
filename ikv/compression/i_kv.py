@@ -7,9 +7,7 @@ import math
 
 
 @torch.no_grad()
-def compute_attention_scores(
-    query_states, key_states, pooling="max"
-):
+def compute_attention_scores(query_states, key_states, pooling="max"):
     """
     query_states: (bsz, q_heads, q_len, head_dim)
     key_states: (bsz, kv_heads, kv_cache_len, head_dim)
@@ -88,6 +86,10 @@ def cross_salience_score(
         all_score = all_score.masked_fill_(mask, 0)
 
         all_score = all_score.mean(dim=(2, 3))  # shape (B, H, L)
+
+        # due to the limitation of precision
+        # we add a small raw score to avoid log(1+x)=0 when x is small, which may loss the information
+        all_score = torch.log(1 + all_score.float()) + 1e-2 * all_score
     else:
         all_score = attention_weights.mean(dim=(2))
     return all_score
@@ -200,7 +202,7 @@ class ImformativeKV:
                     retain_direction=self.retain_direction,
                 )[:, : -self.window_size]
 
-                if self.enable_score_cache or self.cross_salience_score:
+                if self.enable_score_cache:
                     # normalize similarity_cos
                     similarity_cos = similarity_cos.div_(
                         similarity_cos.max(dim=-1, keepdim=True).values
