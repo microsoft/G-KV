@@ -63,8 +63,8 @@ def main(args):
                 test_data.append(item)
 
     for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
-        if i+args.eval_batch_size>len(prompts):
-            batch_prompts=prompts[i:]
+        if i + args.eval_batch_size > len(prompts):
+            batch_prompts = prompts[i:]
         else:
             batch_prompts = prompts[i : i + args.eval_batch_size]
         tokenized_prompts = tokenizer(
@@ -148,7 +148,7 @@ def parse_arguments():
     )
     # sampling config
     parser.add_argument("--n_sample", type=int, default=1)
-    parser.add_argument("--do_sample", action='store_true', default=False)
+    parser.add_argument("--do_sample", action="store_true", default=False)
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--temperature", type=float, default=0.6)
 
@@ -168,11 +168,13 @@ def parse_arguments():
     parser.add_argument(
         "--retain_direction", type=str, default="last", choices=["last", "first"]
     )
-    parser.add_argument("--cross_salience_score", action='store_true', default=False)
-    parser.add_argument("--enable_pooling", action='store_true', default=False)
-    parser.add_argument("--suppressing_redundancy", action='store_true', default=False)
-    parser.add_argument("--num_group", type=int, default=2)
-    parser.add_argument("--enable_score_cache", action='store_true', default=False)
+    parser.add_argument("--enable_pooling", action="store_true", default=False)
+    parser.add_argument("--suppressing_redundancy", action="store_true", default=False)
+    # G-KV config
+    parser.add_argument("--enable_score_cache", action="store_true", default=False)
+    parser.add_argument(
+        "--smooth_method", type=str, default="mean", choices=["mean", "max"]
+    )
     parser.add_argument("--alpha", type=float, default=0.8)
 
     # model config
@@ -210,13 +212,11 @@ if __name__ == "__main__":
             "first_tokens": args.first_tokens,
             "suppressing_redundancy": args.suppressing_redundancy,
             "enable_pooling": args.enable_pooling,
-            # ikv config
-            "cross_salience_score": args.cross_salience_score,
-            "num_group": args.num_group,
+            # g-kv config
+            "smooth_method": args.smooth_method,
             "enable_score_cache": args.enable_score_cache,
             "alpha": args.alpha,
         },
-        "compression": None,
         "update_kv": args.update_kv,
     }
     model_config = {
@@ -243,7 +243,7 @@ if __name__ == "__main__":
             replace_qwen2(compression_config)
         else:
             raise ValueError(f"Unsupported model: {args.model_path}")
-    
+
     if args.attn_implementation == "flash_attention_2":
         model = AutoModelForCausalLM.from_pretrained(
             args.model_path,
