@@ -48,68 +48,20 @@ def compute_attention_scores(query_states, key_states, pooling="max"):
     return attn_scores[:, :, :, :-q_len]
 
 
-@torch.no_grad()
-def cross_salience_score(
-    attention_weights,
-    num_group=2,
-):
-    """
-    Calculate group attention scores for tokens based on attention weights
-
-    Args:
-        attention_weights: (B, H, W, L) - Attention weights between tokens
-        num_group: int - Number of groups to split the attention weights into
-        epsilon: float - Small constant to avoid log(0)
-
-    Returns:
-        cross_salience_score: (B, H, L) - Cross salience score for each token
-    """
-    group_size = attention_weights.shape[2] // num_group
-
-    if num_group > 1:
-        assert (
-            attention_weights.shape[2] % num_group == 0
-        ), f"window size {attention_weights.shape[2]} must be divisible by group {num_group}"
-        B, H, W, L = attention_weights.shape
-
-        # mean score within each group
-        group_attention_weights = attention_weights.view(B, H, num_group, group_size, L)
-        all_score = group_attention_weights.mean(dim=3)
-
-        all_score = all_score.unsqueeze(2) * all_score.unsqueeze(
-            3
-        )  # shape (B, H, G, G, L)
-
-        # mask the diagonal elements
-        mask = torch.eye(all_score.shape[2], device=all_score.device).bool()  # (G, G)
-        mask = mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1)
-        all_score = all_score.masked_fill_(mask, 0)
-
-        all_score = all_score.mean(dim=(2, 3))  # shape (B, H, L)
-
-        # due to the limitation of precision
-        # we add a small raw score to avoid log(1+x)=0 when x is small, which may loss the information
-        all_score = torch.log(1 + all_score.float()) + 1e-2 * all_score
-    else:
-        all_score = attention_weights.mean(dim=(2))
-    return all_score
-
-
 class ImformativeKV:
     def __init__(
         self,
         budget=128,
         window_size=8,
         kernel_size=7,
-        mix_lambda=0.07,
+        mix_lambda=0.1,
         retain_ratio=0.1,
         retain_direction="last",
         record_kept_token_indices=False,
         enable_pooling=False,
         suppressing_redundancy=False,
-        cross_salience_score=False,
+        smooth_method="mean",
         enable_score_cache=False,
-        num_group=2,
         alpha=0.8,
         **kwargs,
     ):
@@ -123,8 +75,7 @@ class ImformativeKV:
         self.enable_pooling = enable_pooling
         self.suppressing_redundancy = suppressing_redundancy
         # ikv parameters
-        self.cross_salience_score = cross_salience_score
-        self.num_group = num_group
+        self.smooth_method = smooth_method
         self.enable_score_cache = enable_score_cache
         self.alpha = alpha
 
@@ -164,12 +115,7 @@ class ImformativeKV:
                 raise ValueError("attn_scores is nan or inf")
 
             # shape: (bsz, num_kv_heads, len)
-            if self.cross_salience_score:
-                final_score = cross_salience_score(
-                    attn_scores, num_group=self.num_group
-                )
-            else:
-                final_score = attn_scores.mean(dim=2)
+            final_score = attn_scores.mean(dim=2)
 
             if self.enable_score_cache:
                 # normalize final_score
@@ -183,7 +129,14 @@ class ImformativeKV:
                 old_score = torch.cat(
                     [self.cached_score, final_score[:, :, cached_score_len:]], dim=-1
                 )
-                final_score = old_score * self.alpha + final_score * (1 - self.alpha)
+                if self.smooth_method == "mean":
+                    final_score = old_score * self.alpha + final_score * (
+                        1 - self.alpha
+                    )
+                elif self.smooth_method == "max":
+                    final_score = torch.max(old_score * self.alpha, final_score)
+                else:
+                    raise ValueError("smooth method must be mean or max")
 
             if self.enable_pooling:
                 pooled_score = F.max_pool1d(
