@@ -173,6 +173,10 @@ def parse_arguments():
         "--smooth_method", type=str, default="mean", choices=["mean", "max"]
     )
     parser.add_argument("--alpha", type=float, default=0.8)
+    parser.add_argument(
+        "--compress_mode", type=str, default="budget", choices=["budget", "ratio"]
+    )
+    parser.add_argument("--compress_ratio", type=float, default=0.2)
 
     # model config
     parser.add_argument(
@@ -213,6 +217,8 @@ if __name__ == "__main__":
             "smooth_method": args.smooth_method,
             "enable_score_cache": args.enable_score_cache,
             "alpha": args.alpha,
+            "compress_mode": args.compress_mode,
+            "compress_ratio": args.compress_ratio,
         },
         "update_kv": args.update_kv,
     }
