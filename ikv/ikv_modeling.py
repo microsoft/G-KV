@@ -353,6 +353,7 @@ def _sample(
                     key_states=key_states,
                     query_states=query_states,
                     value_states=value_states,
+                    cur_len=cur_len,
                 )
 
                 past_key_value.key_cache[layer_index] = key_states

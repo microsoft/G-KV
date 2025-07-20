@@ -63,6 +63,8 @@ class ImformativeKV:
         smooth_method="mean",
         enable_score_cache=False,
         alpha=0.8,
+        compress_mode="budget",
+        compress_ratio=0.2,
         **kwargs,
     ):
         assert budget - window_size > 0, "budget must be greater than window_size"
@@ -78,6 +80,8 @@ class ImformativeKV:
         self.smooth_method = smooth_method
         self.enable_score_cache = enable_score_cache
         self.alpha = alpha
+        self.compress_mode = compress_mode
+        self.compress_ratio = compress_ratio
 
         self.cached_score = None
 
@@ -95,6 +99,7 @@ class ImformativeKV:
         key_states: Optional[torch.Tensor] = None,
         query_states: Optional[torch.Tensor] = None,
         value_states: Optional[torch.Tensor] = None,
+        cur_len: Optional[int] = None,
     ):
         """
         key_states: (bsz, num_kv_heads, kv_cache_len, head_dim)
@@ -106,7 +111,17 @@ class ImformativeKV:
         head_dim = query_states.shape[-1]
         kv_cache_len = key_states.shape[-2]
 
-        if kv_cache_len < self.budget:
+        if self.compress_mode == "budget":
+            budget = self.budget
+        elif self.compress_mode == "ratio":
+            if (cur_len is not None) and (self.budget / cur_len < self.compress_ratio):
+                budget = int(cur_len * self.compress_ratio)
+            else:
+                budget = self.budget
+        else:
+            raise ValueError("compress mode must be budget or ratio")
+
+        if kv_cache_len < budget:
             return key_states, value_states
         else:
             # shape: (bsz, num_kv_heads, len, len)
@@ -166,7 +181,7 @@ class ImformativeKV:
                 )
 
             # shape: (bsz, num_kv_heads, budget - window_size)
-            indices = pooled_score.topk(self.budget - self.window_size, dim=-1).indices
+            indices = pooled_score.topk(budget - self.window_size, dim=-1).indices
             if self.enable_score_cache:
                 self.cached_score = final_score.gather(dim=2, index=indices)
             #####################################################
