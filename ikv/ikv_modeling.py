@@ -95,31 +95,42 @@ def Qwen2Attention_forward(
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         if not hasattr(past_key_value, "query_cache"):
             past_key_value.query_cache = {}
-
+        # =============== query cache ================
         if self.layer_idx not in past_key_value.query_cache:
-            # prefill stage, initial query caache
-            # bsz, n_heads, _, head_dim = query_states.shape
-            # past_key_value.query_cache[self.layer_idx] = torch.empty(
-            #     bsz, n_heads, 0, head_dim
-            # )
+            # prefill stage, initial query cache
             past_key_value.query_cache[self.layer_idx] = query_states[
                 :, :, -self.config.method_config["window_size"] :, :
             ]
         else:
-            # Add current query to cache
+            # decoding stage, add new query to cache
             past_key_value.query_cache[self.layer_idx] = torch.cat(
                 (past_key_value.query_cache[self.layer_idx], query_states), dim=2
             )  # [batch, n_q_heads, seq_len, head_dim]
-            # Keep only window_size most recent queries
+            # keep only window_size most recent queries
             window_size = self.config.method_config["window_size"]
             if past_key_value.query_cache[self.layer_idx].shape[-2] > window_size:
                 past_key_value.query_cache[self.layer_idx] = past_key_value.query_cache[
                     self.layer_idx
                 ][:, :, -window_size:, :]
+        # =============== end query cache ================
 
         key_states, value_states = past_key_value.update(
             key_states, value_states, self.layer_idx, cache_kwargs
         )
+
+        # =============== kv cache compression ================
+        if kwargs["enable_compress"]:
+            query_cache = past_key_value.query_cache[self.layer_idx]
+            # notice if the length of kv cache is smaller than budget, then the kv cache will not be compressed
+            compressed_key_states, compressed_value_states = self.kv_cluster.update_kv(
+                key_states=key_states,
+                query_states=query_cache,
+                value_states=value_states,
+                cur_len=kwargs["cur_len"],
+            )
+            past_key_value.key_cache[self.layer_idx] = compressed_key_states
+            past_key_value.value_cache[self.layer_idx] = compressed_value_states
+        # =============== end kv cache compression ================
 
     sliding_window = None
     if (
@@ -282,6 +293,14 @@ def _sample(
         this_peer_finished, synced_gpus, device=input_ids.device
     ):
         # prepare model inputs
+
+        # =============== logic of whether to compress ================
+        # during decoding, conduct compression every divide_length steps
+        # if the prefill length is greater than budget, then the prefilled prompt will be compressed immediately
+
+        model_kwargs["cur_len"] = cur_len
+        enable_compress = output_length % self.config.divide_length == 0
+        model_kwargs["enable_compress"] = enable_compress
         model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
         # prepare variable output controls (note: some models won't accept all output controls)
@@ -293,8 +312,10 @@ def _sample(
             if output_hidden_states
             else {}
         )
-
         outputs = model_forward(**model_inputs, return_dict=True)
+        output_length += 1
+
+        # =============== end logic of whether to compress ================
 
         # synced_gpus: don't waste resources running the code we don't need; kwargs must be updated before skipping
         model_kwargs = self._update_model_kwargs_for_generation(
@@ -302,6 +323,7 @@ def _sample(
             model_kwargs,
             is_encoder_decoder=self.config.is_encoder_decoder,
         )
+
         if synced_gpus and this_peer_finished:
             continue
 
@@ -332,36 +354,6 @@ def _sample(
                     if self.config.is_encoder_decoder
                     else (outputs.hidden_states,)
                 )
-
-        # =============== start KV compression ================
-
-        # during decoding, conduct compression every divide_length steps
-        # if the prefill length is greater than budget, then the prefilled prompt will be compressed immediately
-
-        enable_compress = output_length % self.config.divide_length == 0
-
-        past_key_value = model_kwargs.get("past_key_values", None)
-        if enable_compress:
-            for layer_index in range(len(self.model.layers)):
-                query_states = past_key_value.query_cache[layer_index]
-                key_states = past_key_value.key_cache[layer_index]
-                value_states = past_key_value.value_cache[layer_index]
-
-                key_states, value_states = self.model.layers[
-                    layer_index
-                ].self_attn.kv_cluster.update_kv(
-                    key_states=key_states,
-                    query_states=query_states,
-                    value_states=value_states,
-                    cur_len=cur_len,
-                )
-
-                past_key_value.key_cache[layer_index] = key_states
-                past_key_value.value_cache[layer_index] = value_states
-
-        output_length += 1
-
-        # =============== end KV compression ================
 
         # token selection
         if do_sample:
