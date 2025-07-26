@@ -8,7 +8,7 @@ from tqdm import tqdm
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from ikv.monkeypatch import replace_llama, replace_qwen2, replace_qwen3
-
+from time import time
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -58,6 +58,9 @@ def main(args):
             for _ in range(args.n_sample):
                 prompts.append(prompt)
                 test_data.append(item)
+    
+    times=[]
+    sparsities=[]
 
     for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
         if i + args.eval_batch_size > len(prompts):
@@ -72,7 +75,7 @@ def main(args):
         ).to("cuda")
 
         prefill_lengths = tokenized_prompts["attention_mask"].sum(dim=1).tolist()
-
+        start_time = time()
         with torch.no_grad():
             if args.attn_implementation == "flash_attention_2":
                 output = model.generate(
@@ -86,6 +89,11 @@ def main(args):
                         **tokenized_prompts,
                         **sample_args,
                     )
+        end_time = time()
+        times.append(end_time - start_time)
+
+        sparsity = model.clear_score_cache()
+        sparsities.append(sparsity)
 
         batch_token_stats = []
         for j in range(output.size(0)):
@@ -126,6 +134,8 @@ def main(args):
             fout.write(json.dumps(test_data[sample_idx], ensure_ascii=False) + "\n")
 
     fout.close()
+    with open(args.save_path.replace(".jsonl", "_info.json"), "w") as f:
+        json.dump({"times": times, "sparsities": sparsities}, f)
 
 
 def parse_arguments():

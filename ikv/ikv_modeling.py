@@ -384,13 +384,6 @@ def _sample(
         # Otherwise a reference to outputs is kept which keeps the logits alive in the next iteration
         del outputs
 
-    # =============== clear score cache ================
-    for layer in self.model.layers:
-        if hasattr(layer.self_attn, "kv_cluster"):
-            if hasattr(layer.self_attn.kv_cluster, "cached_score"):
-                layer.self_attn.kv_cluster.cached_score = None
-    # ==================================================
-
     if streamer is not None:
         streamer.end()
 
@@ -418,3 +411,21 @@ def _sample(
             )
     else:
         return input_ids
+
+
+def clear_score_cache(self, 
+                      rates=[0.4, 0.2, 0.1, 0.05, 0.01]):
+
+    sparsity = [[0] * len(rates) for _ in range(len(self.model.layers))]
+    for i, layer in enumerate(self.model.layers):
+        if hasattr(layer.self_attn, "kv_cluster"):
+            if hasattr(layer.self_attn.kv_cluster, "cached_score"):
+                if layer.self_attn.kv_cluster.cached_score is not None:
+                    # score shape (B,H,L)
+                    score = layer.self_attn.kv_cluster.cached_score
+                    max_score = score.max(dim=-1).values
+                    for j in range(len(rates)):
+                        sparse_mask = score < (rates[j] * max_score.unsqueeze(-1))
+                        sparsity[i][j] = sparse_mask.float().mean().item()
+                    layer.self_attn.kv_cluster.cached_score = None
+    return sparsity

@@ -54,6 +54,7 @@ def replace_qwen2(compression_config):
             Qwen2Attention_init,
             Qwen2Attention_forward,
             _sample,
+            clear_score_cache,
         )
 
         def init_wrapper(self, config, layer_idx):
@@ -62,6 +63,8 @@ def replace_qwen2(compression_config):
         modeling_qwen2.Qwen2Attention.__init__ = init_wrapper
         modeling_qwen2.Qwen2Attention.forward = Qwen2Attention_forward
         GenerationMixin._sample = _sample
+        modeling_qwen2.Qwen2ForCausalLM.clear_score_cache = clear_score_cache
+
 
 
 def replace_qwen3(compression_config):
