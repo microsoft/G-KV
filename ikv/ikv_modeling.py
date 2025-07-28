@@ -30,7 +30,6 @@ from transformers.generation.utils import (
 )
 from transformers.generation.streamers import BaseStreamer
 
-
 KV_COMPRESSION_MAP = {
     "ikv": ImformativeKV,
 }
@@ -39,7 +38,7 @@ logger = logging.get_logger(__name__)
 
 
 def Qwen2Attention_init(
-    self, config: Qwen2Config, layer_idx: int, compression_config: dict
+        self, config: Qwen2Config, layer_idx: int, compression_config: dict
 ):
     nn.Module.__init__(self)
     self.config = config
@@ -48,7 +47,7 @@ def Qwen2Attention_init(
         config, "head_dim", config.hidden_size // config.num_attention_heads
     )
     self.num_key_value_groups = config.num_attention_heads // config.num_key_value_heads
-    self.scaling = self.head_dim**-0.5
+    self.scaling = self.head_dim ** -0.5
     self.attention_dropout = config.attention_dropout
     self.is_causal = True
     self.q_proj = nn.Linear(
@@ -73,13 +72,13 @@ def Qwen2Attention_init(
 
 
 def Qwen2Attention_forward(
-    self,
-    hidden_states: torch.Tensor,
-    position_embeddings: Tuple[torch.Tensor, torch.Tensor],
-    attention_mask: Optional[torch.Tensor],
-    past_key_value: Optional[Cache] = None,
-    cache_position: Optional[torch.LongTensor] = None,
-    **kwargs: Unpack[FlashAttentionKwargs],
+        self,
+        hidden_states: torch.Tensor,
+        position_embeddings: Tuple[torch.Tensor, torch.Tensor],
+        attention_mask: Optional[torch.Tensor],
+        past_key_value: Optional[Cache] = None,
+        cache_position: Optional[torch.LongTensor] = None,
+        **kwargs: Unpack[FlashAttentionKwargs],
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
     input_shape = hidden_states.shape[:-1]
     hidden_shape = (*input_shape, -1, self.head_dim)
@@ -99,8 +98,8 @@ def Qwen2Attention_forward(
         if self.layer_idx not in past_key_value.query_cache:
             # prefill stage, initial query cache
             past_key_value.query_cache[self.layer_idx] = query_states[
-                :, :, -self.config.method_config["window_size"] :, :
-            ]
+                                                         :, :, -self.config.method_config["window_size"]:, :
+                                                         ]
         else:
             # decoding stage, add new query to cache
             past_key_value.query_cache[self.layer_idx] = torch.cat(
@@ -110,8 +109,8 @@ def Qwen2Attention_forward(
             window_size = self.config.method_config["window_size"]
             if past_key_value.query_cache[self.layer_idx].shape[-2] > window_size:
                 past_key_value.query_cache[self.layer_idx] = past_key_value.query_cache[
-                    self.layer_idx
-                ][:, :, -window_size:, :]
+                                                                 self.layer_idx
+                                                             ][:, :, -window_size:, :]
         # =============== end query cache ================
 
         key_states, value_states = past_key_value.update(
@@ -134,16 +133,16 @@ def Qwen2Attention_forward(
 
     sliding_window = None
     if (
-        self.config.use_sliding_window
-        and getattr(self.config, "sliding_window", None) is not None
-        and self.layer_idx >= self.config.max_window_layers
+            self.config.use_sliding_window
+            and getattr(self.config, "sliding_window", None) is not None
+            and self.layer_idx >= self.config.max_window_layers
     ):
         sliding_window = self.config.sliding_window
 
     attention_interface: Callable = eager_attention_forward
     if self.config._attn_implementation != "eager":
         if self.config._attn_implementation == "sdpa" and kwargs.get(
-            "output_attentions", False
+                "output_attentions", False
         ):
             logger.warning_once(
                 "`torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True`. Falling back to "
@@ -156,10 +155,10 @@ def Qwen2Attention_forward(
     if attention_mask is not None and attention_mask.shape[-1] > key_states.shape[-2]:
         if len(attention_mask.shape) == 4:
             attention_mask = attention_mask[
-                :, :, :, -key_states.shape[-2] :
-            ].contiguous()
+                             :, :, :, -key_states.shape[-2]:
+                             ].contiguous()
         elif len(attention_mask.shape) == 2:
-            attention_mask = attention_mask[:, -key_states.shape[-2] :].contiguous()
+            attention_mask = attention_mask[:, -key_states.shape[-2]:].contiguous()
 
     attn_output, attn_weights = attention_interface(
         self,
@@ -187,14 +186,14 @@ def Qwen2Attention_forward(
 
 
 def _sample(
-    self,
-    input_ids: torch.LongTensor,
-    logits_processor: LogitsProcessorList,
-    stopping_criteria: StoppingCriteriaList,
-    generation_config: GenerationConfig,
-    synced_gpus: bool,
-    streamer: Optional["BaseStreamer"],
-    **model_kwargs,
+        self,
+        input_ids: torch.LongTensor,
+        logits_processor: LogitsProcessorList,
+        stopping_criteria: StoppingCriteriaList,
+        generation_config: GenerationConfig,
+        synced_gpus: bool,
+        streamer: Optional["BaseStreamer"],
+        **model_kwargs,
 ) -> Union[GenerateNonBeamOutput, torch.LongTensor]:
     r"""
     Generates sequences of token ids for models with a language modeling head using **multinomial sampling** and
@@ -274,15 +273,15 @@ def _sample(
 
     if isinstance(model_kwargs.get("past_key_values"), Cache):
         is_compileable = (
-            model_kwargs["past_key_values"].is_compileable
-            and self._supports_static_cache
+                model_kwargs["past_key_values"].is_compileable
+                and self._supports_static_cache
         )
         if getattr(self, "hf_quantizer", None) is not None:
             is_compileable &= self.hf_quantizer.is_compileable
         is_compileable = is_compileable and not generation_config.disable_compile
         if is_compileable and (
-            self.device.type == "cuda"
-            or generation_config.compile_config._compile_all_devices
+                self.device.type == "cuda"
+                or generation_config.compile_config._compile_all_devices
         ):
             os.environ["TOKENIZERS_PARALLELISM"] = "0"
             model_forward = self.get_compiled_call(generation_config.compile_config)
@@ -290,7 +289,7 @@ def _sample(
     output_length = 0
 
     while self._has_unfinished_sequences(
-        this_peer_finished, synced_gpus, device=input_ids.device
+            this_peer_finished, synced_gpus, device=input_ids.device
     ):
         # prepare model inputs
 
@@ -366,7 +365,7 @@ def _sample(
         # finished sentences should have their next token be a padding token
         if has_eos_stopping_criteria:
             next_tokens = next_tokens * unfinished_sequences + pad_token_id * (
-                1 - unfinished_sequences
+                    1 - unfinished_sequences
             )
 
         # update generated ids, model inputs, and length for next step
@@ -413,9 +412,8 @@ def _sample(
         return input_ids
 
 
-def clear_score_cache(self, 
-                      rates=[0.4, 0.2, 0.1, 0.05, 0.01]):
-
+def clear_score_cache(self,
+                      rates=[0.01, 0.05, 0.1, 0.2]):
     sparsity = [[0] * len(rates) for _ in range(len(self.model.layers))]
     for i, layer in enumerate(self.model.layers):
         if hasattr(layer.self_attn, "kv_cluster"):

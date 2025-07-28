@@ -22,7 +22,6 @@ einops==0.8.1
 exceptiongroup==1.3.0
 executing==2.2.0
 filelock==3.18.0
-fishfarm==0.1.0.dev0
 flash-attn==2.5.9.post1
 fonttools==4.58.5
 frozenlist==1.7.0

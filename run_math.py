@@ -95,8 +95,9 @@ def main(args):
         end_time = time()
         times.append(end_time - start_time)
 
-        sparsity = model.clear_score_cache()
-        sparsities.append(sparsity)
+        if args.method=='ikv':
+            sparsity = model.clear_score_cache()
+            sparsities.append(sparsity)
 
         batch_token_stats = []
         for j in range(output.size(0)):
@@ -183,9 +184,10 @@ def parse_arguments():
     # G-KV config
     parser.add_argument("--enable_score_cache", action="store_true", default=False)
     parser.add_argument(
-        "--smooth_method", type=str, default="mean", choices=["mean", "max"]
+        "--smooth_method", type=str, default="max", choices=["mean", "max"]
     )
     parser.add_argument("--alpha", type=float, default=0.8)
+    parser.add_argument("--disable_norm", action="store_true", default=False)
     parser.add_argument(
         "--compress_mode", type=str, default="budget", choices=["budget", "ratio"]
     )
@@ -230,6 +232,7 @@ if __name__ == "__main__":
             "smooth_method": args.smooth_method,
             "enable_score_cache": args.enable_score_cache,
             "alpha": args.alpha,
+            "disable_norm": args.disable_norm,
             "compress_mode": args.compress_mode,
             "compress_ratio": args.compress_ratio,
         },
@@ -240,16 +243,18 @@ if __name__ == "__main__":
         "divide_length": args.divide_length,
         "compression_content": args.compression_content,
     }
+    print('load tokenizer...')
 
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_path, use_fast=True, padding_side="left"
     )
-
+    print('done')
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # apply monkey patch
+    print('load model')
     if args.method.lower() != "fullkv":
         if "llama" in args.model_path.lower():
             replace_llama(compression_config)
@@ -264,20 +269,19 @@ if __name__ == "__main__":
         model = AutoModelForCausalLM.from_pretrained(
             args.model_path,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
             use_cache=True,
             attn_implementation=args.attn_implementation,
-        )
+        ).cuda()
     else:
         # bf16 is numerically unstable, bf16 need to use with flash attention 2
         model = AutoModelForCausalLM.from_pretrained(
             args.model_path,
-            device_map="auto",
             use_cache=True,
             attn_implementation=args.attn_implementation,
-        )
+        ).cuda()
 
     model.eval()
+    print('done')
 
     model.config.update(model_config)
 

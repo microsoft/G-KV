@@ -53,7 +53,7 @@ class ImformativeKV:
         self,
         budget=128,
         window_size=8,
-        kernel_size=7,
+        kernel_size=5,
         mix_lambda=0.1,
         retain_ratio=0.1,
         retain_direction="last",
@@ -62,6 +62,7 @@ class ImformativeKV:
         suppressing_redundancy=False,
         smooth_method="mean",
         enable_score_cache=False,
+        disable_norm=False,
         alpha=0.8,
         compress_mode="budget",
         compress_ratio=0.2,
@@ -80,6 +81,7 @@ class ImformativeKV:
         self.smooth_method = smooth_method
         self.enable_score_cache = enable_score_cache
         self.alpha = alpha
+        self.disable_norm = disable_norm
         self.compress_mode = compress_mode
         self.compress_ratio = compress_ratio
 
@@ -132,7 +134,7 @@ class ImformativeKV:
             # shape: (bsz, num_kv_heads, len)
             final_score = attn_scores.mean(dim=2)
 
-            if self.enable_score_cache:
+            if self.enable_score_cache and not self.disable_norm:
                 # normalize final_score
                 final_score = final_score.div_(
                     final_score.max(dim=-1, keepdim=True).values
@@ -170,7 +172,7 @@ class ImformativeKV:
                     retain_direction=self.retain_direction,
                 )[:, : -self.window_size]
 
-                if self.enable_score_cache:
+                if self.enable_score_cache and not self.disable_norm:
                     # normalize similarity_cos
                     similarity_cos = similarity_cos.div_(
                         similarity_cos.max(dim=-1, keepdim=True).values
