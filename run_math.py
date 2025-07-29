@@ -154,7 +154,7 @@ def parse_arguments():
     parser.add_argument(
         "--attn_implementation",
         type=str,
-        default="flash_attention_2",
+        default="eager",
         choices=["flash_attention_2", "sdpa", "eager"],
     )
     # sampling config

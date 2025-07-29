@@ -132,6 +132,17 @@ def Qwen2Attention_forward(
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
+    
+
+    if past_key_value is not None:
+        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        
+
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
+    
+    # keep only the most recent attention mask
     if attention_mask is not None and attention_mask.shape[-1] > key_states.shape[-2]:
         if len(attention_mask.shape) == 4:
             attention_mask = attention_mask[
@@ -141,7 +152,6 @@ def Qwen2Attention_forward(
             attention_mask = attention_mask[:, -key_states.shape[-2] :].contiguous()
 
     if past_key_value is not None:
-        cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
         if not hasattr(past_key_value, "query_cache"):
             past_key_value.query_cache = {}
         # =============== query cache ================
@@ -163,10 +173,6 @@ def Qwen2Attention_forward(
                 ][:, :, -window_size:, :]
         # =============== end query cache ================
 
-        key_states, value_states = past_key_value.update(
-            key_states, value_states, self.layer_idx, cache_kwargs
-        )
-
         # =============== kv cache compression ================
         if kwargs["enable_compress"]:
             query_cache = past_key_value.query_cache[self.layer_idx]
@@ -176,6 +182,7 @@ def Qwen2Attention_forward(
                 query_states=query_cache,
                 value_states=value_states,
                 cur_len=kwargs["cur_len"],
+                attention_mask=attention_mask,
             )
             past_key_value.key_cache[self.layer_idx] = compressed_key_states
             past_key_value.value_cache[self.layer_idx] = compressed_value_states
@@ -229,7 +236,7 @@ def Qwen2Attention_forward(
     return attn_output, attn_weights
 
 
-def forward(
+def LLamaAttention_forward(
     self,
     hidden_states: torch.Tensor,
     position_embeddings: Tuple[torch.Tensor, torch.Tensor],
