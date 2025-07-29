@@ -7,14 +7,17 @@ import math
 
 
 @torch.no_grad()
-def compute_attention_scores(query_states, key_states, pooling="max"):
+def compute_attention_scores(query_states, key_states, pooling="max",attention_mask=None):
     """
     query_states: (bsz, q_heads, q_len, head_dim)
     key_states: (bsz, kv_heads, kv_cache_len, head_dim)
     return: (bsz, kv_heads, q_len, kv_cache_len - q_len)
+    attention_mask: eager attention mask (bsz, 1, kv_cache_len, kv_cache_len) or
+                    flash attention mask (bsz, kv_cache_len)   
     """
     batch_size, q_heads, q_len, head_dim = query_states.shape
     kv_heads = key_states.shape[1]
+    kv_cache_len = key_states.shape[2]
     query_group_size = q_heads // kv_heads
 
     # shape: [batch_size, kv_heads, query_group_size, q_len, head_dim]
@@ -30,10 +33,34 @@ def compute_attention_scores(query_states, key_states, pooling="max"):
     # shape: [batch_size, kv_heads, query_group_size, q_len, kv_cache_len]
     attn_weights = torch.matmul(query_states, key_states.transpose(3, 4))
 
-    mask = torch.triu(
-        torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
-    ).bool()
-    attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
+
+    if attention_mask is not None:
+        if attention_mask.dim() == 2:
+            # build causal mask (bsz,1,kv_cache_len,kv_cache_len) from attention_mask (bsz,kv_cache_len)
+            # shape: (kv_cache_len, kv_cache_len)
+            causal_mask = torch.triu(
+                torch.ones(kv_cache_len, kv_cache_len, device=attn_weights.device, dtype=torch.bool), diagonal=1
+            )  
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(1)  # (1,1,kv_cache_len,kv_cache_len)
+            # shape: (bsz,1,kv_cache_len,kv_cache_len)
+            causal_mask = causal_mask.expand(batch_size, -1, -1, -1)
+            mask = (attention_mask == 0).unsqueeze(1).unsqueeze(1)  # (bsz,1,1,kv_cache_len)
+            causal_mask = causal_mask.masked_fill(mask, True)
+            # shape: (bsz,kv_heads,query_group_size,q_len,kv_cache_len)
+            attn_weights = attn_weights.masked_fill(causal_mask.unsqueeze(2)[:,:,:,-q_len:,:], -float("inf"))
+        elif attention_mask.dim() == 4:
+            # shape: (bsz,1,kv_cache_len,kv_cache_len)
+            attn_weights = attn_weights.add_(attention_mask.unsqueeze(1)[:,:,:,-q_len:,:])
+            pass
+        else:
+            raise ValueError("attention_mask must be 2D or 4D")
+    else:
+        # shape: (q_len, q_len)
+        # query can see all key before it
+        mask = torch.triu(
+            torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
+        ).bool()
+        attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
 
     attn_scores = torch.softmax(
         attn_weights - attn_weights.max(dim=-1, keepdim=True).values, dim=-1
@@ -53,7 +80,7 @@ class ImformativeKV:
         self,
         budget=128,
         window_size=8,
-        kernel_size=7,
+        kernel_size=5,
         mix_lambda=0.1,
         retain_ratio=0.1,
         retain_direction="last",
@@ -62,6 +89,7 @@ class ImformativeKV:
         suppressing_redundancy=False,
         smooth_method="mean",
         enable_score_cache=False,
+        disable_norm=False,
         alpha=0.8,
         compress_mode="budget",
         compress_ratio=0.2,
@@ -80,6 +108,7 @@ class ImformativeKV:
         self.smooth_method = smooth_method
         self.enable_score_cache = enable_score_cache
         self.alpha = alpha
+        self.disable_norm = disable_norm
         self.compress_mode = compress_mode
         self.compress_ratio = compress_ratio
 
@@ -100,6 +129,7 @@ class ImformativeKV:
         query_states: Optional[torch.Tensor] = None,
         value_states: Optional[torch.Tensor] = None,
         cur_len: Optional[int] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ):
         """
         key_states: (bsz, num_kv_heads, kv_cache_len, head_dim)
@@ -125,14 +155,14 @@ class ImformativeKV:
             return key_states, value_states
         else:
             # shape: (bsz, num_kv_heads, len, len)
-            attn_scores = compute_attention_scores(query_states, key_states)
+            attn_scores = compute_attention_scores(query_states, key_states,attention_mask=attention_mask)
             if torch.isnan(attn_scores).any() or torch.isinf(attn_scores).any():
                 raise ValueError("attn_scores is nan or inf")
 
             # shape: (bsz, num_kv_heads, len)
             final_score = attn_scores.mean(dim=2)
 
-            if self.enable_score_cache:
+            if self.enable_score_cache and not self.disable_norm:
                 # normalize final_score
                 final_score = final_score.div_(
                     final_score.max(dim=-1, keepdim=True).values
@@ -170,7 +200,7 @@ class ImformativeKV:
                     retain_direction=self.retain_direction,
                 )[:, : -self.window_size]
 
-                if self.enable_score_cache:
+                if self.enable_score_cache and not self.disable_norm:
                     # normalize similarity_cos
                     similarity_cos = similarity_cos.div_(
                         similarity_cos.max(dim=-1, keepdim=True).values
@@ -179,9 +209,13 @@ class ImformativeKV:
                 pooled_score = pooled_score * self.mix_lambda - similarity_cos * (
                     1 - self.mix_lambda
                 )
-
+            
             # shape: (bsz, num_kv_heads, budget - window_size)
-            indices = pooled_score.topk(budget - self.window_size, dim=-1).indices
+            topk_indices = pooled_score.topk(budget - self.window_size, dim=-1).indices
+            # sort the indices to keep the padding always at the left
+            # this will make sure the score of padding tokens are zeros and always be evicted first
+            indices=torch.sort(topk_indices, dim=-1).values
+
             if self.enable_score_cache:
                 self.cached_score = final_score.gather(dim=2, index=indices)
             #####################################################
@@ -190,85 +224,6 @@ class ImformativeKV:
             # shape: (num_kv_heads, budget - window_size)
             if self.record_kept_token_indices:
                 pass
-                # indices_cl = indices.clone().squeeze(0).to("cpu")
-
-                # similarity_cos_analysis = cal_similarity(
-                #     key_states,
-                #     retain_ratio=self.retain_ratio,
-                #     retain_direction=self.retain_direction,
-                # )
-
-                # attn_weights_sum_analysis = (
-                #     nn.functional.softmax(
-                #         attn_weights,
-                #         dim=-1,
-                #         dtype=torch.float32,
-                #     )
-                #     .mean(dim=-2)
-                #     .to(query_states.dtype)
-                # )
-
-                # attn_cache_analysis = F.max_pool1d(
-                #     attn_weights_sum_analysis,
-                #     kernel_size=self.kernel_size,
-                #     padding=self.kernel_size // 2,
-                #     stride=1,
-                # )
-
-                # final_score_analysis = (
-                #     attn_cache_analysis * self.mix_lambda
-                #     - similarity_cos_analysis * (1 - self.mix_lambda)
-                # )
-
-                # recent_window_indices = torch.arange(
-                #     kv_cache_len - self.window_size, kv_cache_len, device="cpu"
-                # ).expand(indices_cl.shape[0], -1)
-                # cur_indices = torch.cat([indices_cl, recent_window_indices], dim=-1)
-
-                # #####################################################
-                # ### Store final scores, attention and similarity ####
-                # #####################################################
-
-                # # Gather the scores for the kept tokens
-                # attn_scores = attn_cache_analysis.clone().squeeze(0).to("cpu")
-                # sim_scores = similarity_cos_analysis.clone().squeeze(0).to("cpu")
-                # fin_scores = final_score_analysis.clone().squeeze(0).to("cpu")
-
-                # # print(f"cur_indices {cur_indices} attn_cache_analysis {attn_cache_analysis.shape} similarity_cos_analysis {similarity_cos_analysis.shape} final_score_analysis {final_score_analysis.shape}")
-
-                # # Gather the scores based on index
-                # kept_attn = torch.gather(attn_scores, dim=1, index=cur_indices)
-                # kept_sim = torch.gather(sim_scores, dim=1, index=cur_indices)
-                # kept_final = torch.gather(fin_scores, dim=1, index=cur_indices)
-
-                # #####################################################
-
-                # if self.evicted_token_num > 0:
-                #     prev_indices = self.kept_token_indices[-1]
-                #     mask = cur_indices < self.budget
-
-                #     for i in range(cur_indices.shape[0]):
-                #         positions = torch.where(mask[i])[0]
-
-                #         # For each position, get the value and use it as an index into prev_indices
-                #         for pos in positions:
-                #             val = cur_indices[i, pos].item()
-                #             cur_indices[i, pos] = prev_indices[i, val]
-
-                #     # For values >= self.budget, add the evicted token count
-                #     cur_indices[~mask] += self.evicted_token_num
-
-                # #####################################################
-                # ### Store final scores, attention and similarity ####
-                # #####################################################
-                # self.kept_attention_scores.append(kept_attn)
-                # self.kept_similarity_scores.append(kept_sim)
-                # self.kept_final_scores.append(kept_final)
-                # #####################################################
-
-                # self.kept_token_indices.append(cur_indices)
-                # self.evicted_token_num += kv_cache_len - self.budget
-            ######################################################
 
             # shape: (bsz, num_kv_heads, budget - window_size, head_dim)
             indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
