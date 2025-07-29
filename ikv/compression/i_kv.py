@@ -7,14 +7,17 @@ import math
 
 
 @torch.no_grad()
-def compute_attention_scores(query_states, key_states, pooling="max"):
+def compute_attention_scores(query_states, key_states, pooling="max",attention_mask=None):
     """
     query_states: (bsz, q_heads, q_len, head_dim)
     key_states: (bsz, kv_heads, kv_cache_len, head_dim)
     return: (bsz, kv_heads, q_len, kv_cache_len - q_len)
+    attention_mask: eager attention mask (bsz, 1, kv_cache_len, kv_cache_len) or
+                    flash attention mask (bsz, kv_cache_len)   
     """
     batch_size, q_heads, q_len, head_dim = query_states.shape
     kv_heads = key_states.shape[1]
+    kv_cache_len = key_states.shape[2]
     query_group_size = q_heads // kv_heads
 
     # shape: [batch_size, kv_heads, query_group_size, q_len, head_dim]
@@ -30,10 +33,34 @@ def compute_attention_scores(query_states, key_states, pooling="max"):
     # shape: [batch_size, kv_heads, query_group_size, q_len, kv_cache_len]
     attn_weights = torch.matmul(query_states, key_states.transpose(3, 4))
 
-    mask = torch.triu(
-        torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
-    ).bool()
-    attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
+
+    if attention_mask is not None:
+        if attention_mask.dim() == 2:
+            # build causal mask (bsz,1,kv_cache_len,kv_cache_len) from attention_mask (bsz,kv_cache_len)
+            # shape: (kv_cache_len, kv_cache_len)
+            causal_mask = torch.triu(
+                torch.ones(kv_cache_len, kv_cache_len, device=attn_weights.device, dtype=torch.bool), diagonal=1
+            )  
+            causal_mask = causal_mask.unsqueeze(0).unsqueeze(1)  # (1,1,kv_cache_len,kv_cache_len)
+            # shape: (bsz,1,kv_cache_len,kv_cache_len)
+            causal_mask = causal_mask.expand(batch_size, -1, -1, -1)
+            mask = (attention_mask == 0).unsqueeze(1).unsqueeze(1)  # (bsz,1,1,kv_cache_len)
+            causal_mask = causal_mask.masked_fill(mask, False)
+            # shape: (bsz,kv_heads,query_group_size,q_len,kv_cache_len)
+            attn_weights = attn_weights.masked_fill(causal_mask.unsqueeze(2)[:,:,:,-q_len:,:], -float("inf"))
+        elif attention_mask.dim() == 4:
+            # shape: (bsz,1,kv_cache_len,kv_cache_len)
+            attn_weights = attn_weights.masked_fill(attention_mask.unsqueeze(1)[:,:,:,-q_len:,:], -float("inf"))
+            pass
+        else:
+            raise ValueError("attention_mask must be 2D or 4D")
+    else:
+        # shape: (q_len, q_len)
+        # query can see all key before it
+        mask = torch.triu(
+            torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
+        ).bool()
+        attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
 
     attn_scores = torch.softmax(
         attn_weights - attn_weights.max(dim=-1, keepdim=True).values, dim=-1
@@ -102,6 +129,7 @@ class ImformativeKV:
         query_states: Optional[torch.Tensor] = None,
         value_states: Optional[torch.Tensor] = None,
         cur_len: Optional[int] = None,
+        attention_mask: Optional[torch.Tensor] = None,
     ):
         """
         key_states: (bsz, num_kv_heads, kv_cache_len, head_dim)
@@ -127,7 +155,7 @@ class ImformativeKV:
             return key_states, value_states
         else:
             # shape: (bsz, num_kv_heads, len, len)
-            attn_scores = compute_attention_scores(query_states, key_states)
+            attn_scores = compute_attention_scores(query_states, key_states,attention_mask=attention_mask)
             if torch.isnan(attn_scores).any() or torch.isinf(attn_scores).any():
                 raise ValueError("attn_scores is nan or inf")
 
@@ -181,9 +209,15 @@ class ImformativeKV:
                 pooled_score = pooled_score * self.mix_lambda - similarity_cos * (
                     1 - self.mix_lambda
                 )
+            
+            # mask the score of padding tokens
+            # TODO: 
 
             # shape: (bsz, num_kv_heads, budget - window_size)
-            indices = pooled_score.topk(budget - self.window_size, dim=-1).indices
+            topk_indices = pooled_score.topk(budget - self.window_size, dim=-1).indices
+            # sort the indices to keep the padding always at the left
+            indices=torch.sort(topk_indices, dim=-1).indices
+
             if self.enable_score_cache:
                 self.cached_score = final_score.gather(dim=2, index=indices)
             #####################################################
