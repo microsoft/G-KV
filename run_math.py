@@ -63,7 +63,7 @@ def main(args):
                 test_data.append(item)
     
     times=[]
-    sparsities=[]
+    all_scores=[]
     pos_ids_cache=[]
 
     for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
@@ -98,8 +98,9 @@ def main(args):
 
         if args.method=='ikv':
             # clear the score cache
-            sparsity = model.clear_score_cache()
-            sparsities.append(sparsity)
+            scores = model.clear_score_cache()
+            if args.record_scores:
+                all_scores.append(scores)
         
         if hasattr(model, "pos_ids_cache"):
             pos_ids_cache.append(model.pos_ids_cache)
@@ -145,7 +146,7 @@ def main(args):
 
     fout.close()
     with open(args.save_path.replace(".jsonl", "_info.json"), "w") as f:
-        json.dump({"times": times, "sparsities": sparsities, "pos_ids": pos_ids_cache}, f)
+        json.dump({"times": times, "scores": all_scores, "pos_ids": pos_ids_cache}, f)
 
 
 def parse_arguments():
@@ -198,7 +199,9 @@ def parse_arguments():
         "--compress_mode", type=str, default="budget", choices=["budget", "ratio"]
     )
     parser.add_argument("--compress_ratio", type=float, default=0.2)
+
     parser.add_argument("--record_pos_ids", action="store_true",  default=False)
+    parser.add_argument("--record_scores", action="store_true",  default=False)
 
     # model config
     parser.add_argument(

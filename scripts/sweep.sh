@@ -8,7 +8,7 @@ export CUDA_VISIBLE_DEVICES=4
 # You can change PARAM_NAME and PARAM_VALUES to sweep over other parameters.
 
 PARAM_NAME="alpha"
-PARAM_VALUES=(0  0.2  0.4  0.6  0.8 0.9 1)
+PARAM_VALUES=( 0.2  0.4  0.6  0.8 0.9 1)
 
 for val in "${PARAM_VALUES[@]}"
 do

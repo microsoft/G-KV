@@ -586,7 +586,7 @@ def _sample(
             pos_ids_cache = past_key_values.pos_ids_cache
             self.pos_ids_cache = {}
             for layer_idx in pos_ids_cache:
-                self.pos_ids_cache[layer_idx] = pos_ids_cache[layer_idx].cpu().tolist()
+                self.pos_ids_cache[layer_idx] = pos_ids_cache[layer_idx].tolist()
 
     #  =============== end record pos ids ===============
     if streamer is not None:
@@ -618,17 +618,14 @@ def _sample(
         return input_ids
 
 
-def clear_score_cache(self, rates=[0.01, 0.05, 0.1, 0.2]):
-    sparsity = [[0] * len(rates) for _ in range(len(self.model.layers))]
-    for i, layer in enumerate(self.model.layers):
+def clear_score_cache(self):
+    all_scores = []
+    for layer in self.model.layers:
         if hasattr(layer.self_attn, "kv_cluster"):
             if hasattr(layer.self_attn.kv_cluster, "cached_score"):
                 if layer.self_attn.kv_cluster.cached_score is not None:
                     # score shape (B,H,L)
-                    score = layer.self_attn.kv_cluster.cached_score
-                    max_score = score.max(dim=-1).values
-                    for j in range(len(rates)):
-                        sparse_mask = score < (rates[j] * max_score.unsqueeze(-1))
-                        sparsity[i][j] = sparse_mask.float().mean().item()
+                    score = layer.self_attn.kv_cluster.cached_score.tolist()
+                    all_scores.append(score)
                     layer.self_attn.kv_cluster.cached_score = None
-    return sparsity
+    return all_scores
