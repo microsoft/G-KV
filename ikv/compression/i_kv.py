@@ -183,7 +183,7 @@ class ImformativeKV:
                     final_score.max(dim=-1, keepdim=True).values
                 )
 
-            if self.enable_score_cache and self.cached_score is not None:
+            if self.enable_score_cache and self.cached_score is not None and self.alpha>0:
                 # cached score shape: (bsz, num_kv_heads, cached_score_len)
                 cached_score_len = self.cached_score.shape[-1]
                 old_score = torch.cat(
