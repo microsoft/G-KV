@@ -64,6 +64,7 @@ def main(args):
     
     times=[]
     sparsities=[]
+    pos_ids_cache=[]
 
     for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
         if i + args.eval_batch_size > len(prompts):
@@ -98,6 +99,9 @@ def main(args):
         if args.method=='ikv':
             sparsity = model.clear_score_cache()
             sparsities.append(sparsity)
+        
+        if hasattr(model, "pos_ids_cache"):
+            pos_ids_cache.append(model.pos_ids_cache)
 
         batch_token_stats = []
         for j in range(output.size(0)):
@@ -139,7 +143,7 @@ def main(args):
 
     fout.close()
     with open(args.save_path.replace(".jsonl", "_info.json"), "w") as f:
-        json.dump({"times": times, "sparsities": sparsities}, f)
+        json.dump({"times": times, "sparsities": sparsities, "pos_ids": pos_ids_cache}, f)
 
 
 def parse_arguments():
@@ -154,7 +158,7 @@ def parse_arguments():
     parser.add_argument(
         "--attn_implementation",
         type=str,
-        default="eager",
+        default="flash_attention_2",
         choices=["flash_attention_2", "sdpa", "eager"],
     )
     # sampling config
@@ -192,6 +196,7 @@ def parse_arguments():
         "--compress_mode", type=str, default="budget", choices=["budget", "ratio"]
     )
     parser.add_argument("--compress_ratio", type=float, default=0.2)
+    parser.add_argument("--record_pos_ids", action="store_true",  default=False)
 
     # model config
     parser.add_argument(
@@ -237,6 +242,7 @@ if __name__ == "__main__":
             "compress_ratio": args.compress_ratio,
         },
         "update_kv": args.update_kv,
+        "record_pos_ids": args.record_pos_ids,
     }
     model_config = {
         "divide_method": args.divide_method,

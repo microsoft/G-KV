@@ -132,26 +132,13 @@ def Qwen2Attention_forward(
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-    
-
     if past_key_value is not None:
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-        
 
         key_states, value_states = past_key_value.update(
             key_states, value_states, self.layer_idx, cache_kwargs
         )
-    
-    # keep only the most recent attention mask
-    if attention_mask is not None and attention_mask.shape[-1] > key_states.shape[-2]:
-        if len(attention_mask.shape) == 4:
-            attention_mask = attention_mask[
-                :, :, -key_states.shape[-2] :, -key_states.shape[-2] :
-            ].contiguous()
-        elif len(attention_mask.shape) == 2:
-            attention_mask = attention_mask[:, -key_states.shape[-2] :].contiguous()
 
-    if past_key_value is not None:
         if not hasattr(past_key_value, "query_cache"):
             past_key_value.query_cache = {}
         # =============== query cache ================
@@ -173,20 +160,46 @@ def Qwen2Attention_forward(
                 ][:, :, -window_size:, :]
         # =============== end query cache ================
 
+        if hasattr(past_key_value, "pos_ids_cache"):
+            pos_ids_cache = past_key_value.pos_ids_cache[self.layer_idx]
+        else:
+            pos_ids_cache = None
+
         # =============== kv cache compression ================
         if kwargs["enable_compress"]:
             query_cache = past_key_value.query_cache[self.layer_idx]
             # notice if the length of kv cache is smaller than budget, then the kv cache will not be compressed
-            compressed_key_states, compressed_value_states = self.kv_cluster.update_kv(
-                key_states=key_states,
-                query_states=query_cache,
-                value_states=value_states,
-                cur_len=kwargs["cur_len"],
-                attention_mask=attention_mask,
+            compressed_key_states, compressed_value_states, pos_ids_cache = (
+                self.kv_cluster.update_kv(
+                    key_states=key_states,
+                    query_states=query_cache,
+                    value_states=value_states,
+                    pos_ids_cache=pos_ids_cache,
+                    cur_len=kwargs["cur_len"],
+                    attention_mask=(
+                        past_key_value.attention_mask
+                        if hasattr(past_key_value, "attention_mask")
+                        else None
+                    ),
+                    unfinished_sequences=past_key_value.unfinished_sequences,
+                )
             )
             past_key_value.key_cache[self.layer_idx] = compressed_key_states
             past_key_value.value_cache[self.layer_idx] = compressed_value_states
+            if pos_ids_cache is not None:
+                past_key_value.pos_ids_cache[self.layer_idx] = pos_ids_cache
         # =============== end kv cache compression ================
+
+    # keep only the most recent attention mask
+    if attention_mask is not None and attention_mask.shape[-1] > key_states.shape[-2]:
+        if len(attention_mask.shape) == 4:
+            # mask for eager attention
+            attention_mask = attention_mask[
+                :, :, -key_states.shape[-2] :, -key_states.shape[-2] :
+            ].contiguous()
+        elif len(attention_mask.shape) == 2:
+            # mask for flash attention
+            attention_mask = attention_mask[:, -key_states.shape[-2] :].contiguous()
 
     sliding_window = None
     if (
@@ -209,7 +222,6 @@ def Qwen2Attention_forward(
             attention_interface = ALL_ATTENTION_FUNCTIONS[
                 self.config._attn_implementation
             ]
-
 
     attn_output, attn_weights = attention_interface(
         self,
@@ -430,8 +442,29 @@ def _sample(
             os.environ["TOKENIZERS_PARALLELISM"] = "0"
             model_forward = self.get_compiled_call(generation_config.compile_config)
 
-    output_length = 0
+    #  =============== initialize pos ids (optional for analysis) ===============
 
+    if hasattr(self.config, "record_pos_ids") and self.config.record_pos_ids:
+        if model_kwargs.get("attention_mask") is not None:
+            initial_pos_ids = torch.cumsum(model_kwargs["attention_mask"], dim=-1) - 1
+        else:
+            initial_pos_ids = (
+                torch.cumsum(
+                    torch.ones((batch_size, cur_len), device=input_ids.device), dim=-1
+                )
+                - 1
+            )
+        if model_kwargs.get("past_key_values") is not None:
+            past_key_values = model_kwargs["past_key_values"]
+            past_key_values.pos_ids_cache = {}
+            for layer_idx in range(len(self.model.layers)):
+                # batch_size, kv_heads, seq_len
+                past_key_values.pos_ids_cache[layer_idx] = initial_pos_ids.unsqueeze(
+                    1
+                ).expand(-1, self.config.num_key_value_heads, -1)
+
+    #  =============== end initialize pos ids ===============
+    output_length = 0
     while self._has_unfinished_sequences(
         this_peer_finished, synced_gpus, device=input_ids.device
     ):
@@ -446,6 +479,15 @@ def _sample(
         model_kwargs["enable_compress"] = enable_compress
         model_inputs = self.prepare_inputs_for_generation(input_ids, **model_kwargs)
 
+        if model_kwargs.get("past_key_values", None) is not None:
+            if model_kwargs.get("attention_mask", None) is not None:
+                # huggingface may process the attention mask in the prepare_inputs_for_generation function
+                # we need to pass the original attention mask to the update function
+                model_kwargs["past_key_values"].attention_mask = model_kwargs[
+                    "attention_mask"
+                ]
+            model_kwargs["past_key_values"].unfinished_sequences = unfinished_sequences
+
         # prepare variable output controls (note: some models won't accept all output controls)
         model_inputs.update(
             {"output_attentions": output_attentions} if output_attentions else {}
@@ -457,6 +499,16 @@ def _sample(
         )
         outputs = model_forward(**model_inputs, return_dict=True)
         output_length += 1
+
+        # update pos ids cache
+        if model_kwargs.get("past_key_values") is not None:
+            if hasattr(model_kwargs["past_key_values"], "pos_ids_cache"):
+                pos_ids_cache = model_kwargs["past_key_values"].pos_ids_cache
+                for layer_idx in pos_ids_cache:
+                    new_pos = pos_ids_cache[layer_idx][:, :, -1].unsqueeze(-1) + 1
+                    pos_ids_cache[layer_idx] = torch.cat(
+                        [pos_ids_cache[layer_idx], new_pos], dim=2
+                    )
 
         # =============== end logic of whether to compress ================
 
@@ -527,6 +579,16 @@ def _sample(
         # Otherwise a reference to outputs is kept which keeps the logits alive in the next iteration
         del outputs
 
+    #  =============== record pos ids ===============
+
+    if model_kwargs.get("past_key_values") is not None:
+        if hasattr(past_key_values, "pos_ids_cache"):
+            pos_ids_cache = past_key_values.pos_ids_cache
+            self.pos_ids_cache = {}
+            for layer_idx in pos_ids_cache:
+                self.pos_ids_cache[layer_idx] = pos_ids_cache[layer_idx].cpu().tolist()
+
+    #  =============== end record pos ids ===============
     if streamer is not None:
         streamer.end()
 
