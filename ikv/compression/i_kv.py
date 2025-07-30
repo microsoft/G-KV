@@ -34,7 +34,7 @@ def compute_attention_scores(
     # shape: [batch_size, kv_heads, query_group_size, q_len, kv_cache_len]
     attn_weights = torch.matmul(query_states, key_states.transpose(3, 4))
 
-    if attention_mask is not None:
+    if attention_mask is not None and torch.any(attention_mask == 0):
         if attention_mask.dim() == 2:
             # build causal mask (bsz,1,kv_cache_len,kv_cache_len) from attention_mask (bsz,kv_cache_len)
             # shape: (kv_cache_len, kv_cache_len)
@@ -208,11 +208,6 @@ class ImformativeKV:
             else:
                 pooled_score = final_score
 
-            if attention_mask is not None:
-                # set the score of padding tokens to -1e10
-                mask = (attention_mask == 0)[:, : -self.window_size].unsqueeze(1)
-                pooled_score.masked_fill_(mask, -1e10)
-
             if self.suppressing_redundancy:
                 similarity_cos = cal_similarity(
                     key_states,
@@ -229,6 +224,11 @@ class ImformativeKV:
                 pooled_score = pooled_score * self.mix_lambda - similarity_cos * (
                     1 - self.mix_lambda
                 )
+
+            if attention_mask is not None:
+                # set the score of padding tokens to -100
+                mask = (attention_mask == 0)[:, : -self.window_size].unsqueeze(1)
+                pooled_score.masked_fill_(mask, -100)
 
             # shape: (bsz, num_kv_heads, budget - window_size)
             topk_indices = pooled_score.topk(budget - self.window_size, dim=-1).indices

@@ -97,11 +97,13 @@ def main(args):
         times.append(end_time - start_time)
 
         if args.method=='ikv':
+            # clear the score cache
             sparsity = model.clear_score_cache()
             sparsities.append(sparsity)
         
         if hasattr(model, "pos_ids_cache"):
             pos_ids_cache.append(model.pos_ids_cache)
+            model.pos_ids_cache = None
 
         batch_token_stats = []
         for j in range(output.size(0)):
