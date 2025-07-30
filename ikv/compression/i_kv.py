@@ -64,7 +64,7 @@ def compute_attention_scores(
             raise ValueError("attention_mask must be 2D")
     else:
         # shape: (q_len, q_len)
-        # query can see all key before it
+        # no left padding, query can see all key before it
         mask = torch.triu(
             torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
         ).bool()
@@ -216,6 +216,7 @@ class ImformativeKV:
                 )[:, : -self.window_size]
 
                 if self.enable_score_cache and not self.disable_norm:
+                    # disable normalization for the original similarity score
                     # normalize similarity_cos
                     similarity_cos = similarity_cos.div_(
                         similarity_cos.max(dim=-1, keepdim=True).values
@@ -226,14 +227,17 @@ class ImformativeKV:
                 )
 
             if attention_mask is not None:
-                # set the score of padding tokens to -100
+                # similarity cos may make score to be negative
+                # so we need to set the score of padding tokens to the minimum value
+                # this will make sure the padding tokens always be evicted first
                 mask = (attention_mask == 0)[:, : -self.window_size].unsqueeze(1)
-                pooled_score.masked_fill_(mask, -100)
+                min_values = pooled_score.min().item()
+                pooled_score.masked_fill_(mask, min_values-1e-6)
 
             # shape: (bsz, num_kv_heads, budget - window_size)
             topk_indices = pooled_score.topk(budget - self.window_size, dim=-1).indices
             # sort the indices to keep the padding always at the left
-            # this will make sure the score of padding tokens are zeros and always be evicted first
+            # this will make sure the attention mask match the KV caches
             indices = torch.sort(topk_indices, dim=-1).values
 
             if self.enable_score_cache:
