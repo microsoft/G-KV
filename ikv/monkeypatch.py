@@ -22,8 +22,8 @@ def replace_llama(compression_config):
         from .ikv_modeling import (
             LlamaAttention_init,
             LlamaAttention_forward,
-            CausalLM_forward,
             _sample,
+            clear_score_cache,
         )
 
         def init_wrapper(self, config, layer_idx):
@@ -31,7 +31,7 @@ def replace_llama(compression_config):
 
         modeling_llama.LlamaAttention.__init__ = LlamaAttention_init
         modeling_llama.LlamaAttention.forward = LlamaAttention_forward
-        modeling_llama.LlamaForCausalLM.forward = CausalLM_forward
+        modeling_llama.LlamaForCausalLM.clear_score_cache = clear_score_cache
         GenerationMixin._sample = _sample
 
 

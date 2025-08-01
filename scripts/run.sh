@@ -1,5 +1,5 @@
 set -x
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=5
 
 # --enable_pooling
 # --suppressing_redundancy
@@ -15,8 +15,8 @@ export CUDA_VISIBLE_DEVICES=3
 
 python3 ./run_math.py \
 --dataset_path ./data/amc23.jsonl \
---save_path ./outputs/amc23_dsqwen7b_h2o.jsonl \
---model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+--save_path ./outputs/amc23_dsllama8b_h2o.jsonl \
+--model_path deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
 --max_length 16384 \
 --eval_batch_size 160 \
 --method ikv \
@@ -34,8 +34,8 @@ python3 ./run_math.py \
 
 python3 ./run_math.py \
 --dataset_path ./data/amc23.jsonl \
---save_path ./outputs/amc23_dsqwen7b_spankv.jsonl \
---model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+--save_path ./outputs/amc23_dsllama8b_spankv.jsonl \
+--model_path deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
 --max_length 16384 \
 --eval_batch_size 160 \
 --method ikv \
@@ -54,8 +54,8 @@ python3 ./run_math.py \
 
 python3 ./run_math.py \
 --dataset_path ./data/amc23.jsonl \
---save_path ./outputs/amc23_dsqwen7b_rkv.jsonl \
---model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+--save_path ./outputs/amc23_dsllama8b_rkv.jsonl \
+--model_path deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
 --max_length 16384 \
 --eval_batch_size 160 \
 --method ikv \

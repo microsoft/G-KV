@@ -10,6 +10,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from ikv.monkeypatch import replace_llama, replace_qwen2, replace_qwen3
 from time import time
 
+
 def set_seed(seed):
     """
     set seed
@@ -61,16 +62,16 @@ def main(args):
             for _ in range(args.n_sample):
                 prompts.append(prompt)
                 test_data.append(item)
-    
-    times=[]
-    all_scores=[]
-    pos_ids_cache=[]
+
+    times = []
+    all_scores = []
+    pos_ids_cache = []
 
     for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
         if i + args.eval_batch_size > len(prompts):
             batch_prompts = prompts[i:]
         else:
-            batch_prompts = prompts[i : i + args.eval_batch_size]
+            batch_prompts = prompts[i: i + args.eval_batch_size]
         tokenized_prompts = tokenizer(
             batch_prompts,
             padding="longest",
@@ -96,12 +97,12 @@ def main(args):
         end_time = time()
         times.append(end_time - start_time)
 
-        if args.method=='ikv':
+        if args.method == 'ikv':
             # clear the score cache
             scores = model.clear_score_cache()
             if args.record_scores:
                 all_scores.append(scores)
-        
+
         if hasattr(model, "pos_ids_cache"):
             pos_ids_cache.append(model.pos_ids_cache)
             model.pos_ids_cache = None
@@ -123,7 +124,7 @@ def main(args):
             )
 
         batch_outputs = tokenizer.batch_decode(
-            [output[j][prefill_lengths[j] :] for j in range(output.size(0))],
+            [output[j][prefill_lengths[j]:] for j in range(output.size(0))],
             skip_special_tokens=True,
         )
 
@@ -145,8 +146,9 @@ def main(args):
             fout.write(json.dumps(test_data[sample_idx], ensure_ascii=False) + "\n")
 
     fout.close()
-    with open(args.save_path.replace(".jsonl", "_info.json"), "w") as f:
-        json.dump({"times": times, "scores": all_scores, "pos_ids": pos_ids_cache}, f)
+    np.save(args.save_path.replace(".jsonl", "_info.npy"),
+            np.array({"times": times, "scores": all_scores, "pos_ids": pos_ids_cache},
+                     dtype=object))
 
 
 def parse_arguments():
@@ -200,8 +202,8 @@ def parse_arguments():
     )
     parser.add_argument("--compress_ratio", type=float, default=0.2)
 
-    parser.add_argument("--record_pos_ids", action="store_true",  default=False)
-    parser.add_argument("--record_scores", action="store_true",  default=False)
+    parser.add_argument("--record_pos_ids", action="store_true", default=False)
+    parser.add_argument("--record_scores", action="store_true", default=False)
 
     # model config
     parser.add_argument(

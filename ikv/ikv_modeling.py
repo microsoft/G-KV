@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import numpy as np
+
 from typing import List, Optional, Tuple, Union, Callable
 from transformers.utils import logging
 from transformers.processing_utils import Unpack
@@ -234,14 +236,6 @@ def Qwen2Attention_forward(
         sliding_window=sliding_window,  # main diff with Llama
         **kwargs,
     )
-    if torch.isnan(attn_output).any():
-        if torch.isnan(query_states).any():
-            print("query_states is nan")
-        if torch.isnan(key_states).any():
-            print("key_states is nan")
-        if torch.isnan(value_states).any():
-            print("value_states is nan")
-        raise ValueError("attn_output is nan")
 
     attn_output = attn_output.reshape(*input_shape, -1).contiguous()
     attn_output = self.o_proj(attn_output)
@@ -267,18 +261,17 @@ def LLamaAttention_forward(
     cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
-    if attention_mask is not None and attention_mask.shape[-1] > key_states.shape[-2]:
-        # left padding causal mask
-        if len(attention_mask.shape) == 4:
-            attention_mask = attention_mask[
-                :, :, -key_states.shape[-2] :, -key_states.shape[-2] :
-            ].contiguous()
-        elif len(attention_mask.shape) == 2:
-            attention_mask = attention_mask[:, -key_states.shape[-2] :].contiguous()
+    
 
     if past_key_value is not None:
         # sin and cos are specific to RoPE models; cache_position needed for the static cache
         cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
+        key_states, value_states = past_key_value.update(
+            key_states, value_states, self.layer_idx, cache_kwargs
+        )
+
+        # =============== query cache ================
+
         if not hasattr(past_key_value, "query_cache"):
             past_key_value.query_cache = {}
         if self.layer_idx not in past_key_value.query_cache:
@@ -286,30 +279,57 @@ def LLamaAttention_forward(
                 :, :, -self.config.method_config["window_size"] :, :
             ]
         else:
+            # decoding stage, add new query to cache
             past_key_value.query_cache[self.layer_idx] = torch.cat(
-                (past_key_value.query_cache[self.layer_idx], key_states), dim=2
-            )
-            if (
-                past_key_value.query_cache[self.layer_idx].shape[-2]
-                > self.config.method_config["window_size"]
-            ):
+                (past_key_value.query_cache[self.layer_idx], query_states), dim=2
+            )  # [batch, n_q_heads, seq_len, head_dim]
+            # keep only window_size most recent queries
+            window_size = self.config.method_config["window_size"]
+            if past_key_value.query_cache[self.layer_idx].shape[-2] > window_size:
                 past_key_value.query_cache[self.layer_idx] = past_key_value.query_cache[
                     self.layer_idx
-                ][:, :, -self.config.method_config["window_size"] :, :]
+                ][:, :, -window_size:, :]
+        # =============== end query cache ================
 
-        key_states, value_states = past_key_value.update(
-            key_states, value_states, self.layer_idx, cache_kwargs
-        )
+        if hasattr(past_key_value, "pos_ids_cache"):
+            pos_ids_cache = past_key_value.pos_ids_cache[self.layer_idx]
+        else:
+            pos_ids_cache = None
+
+        # =============== kv cache compression ================
         if kwargs["enable_compress"]:
             query_cache = past_key_value.query_cache[self.layer_idx]
-            compressed_key_states, compressed_value_states = self.kv_cluster.update_kv(
-                key_states=key_states,
-                query_states=query_cache,
-                value_states=value_states,
-                cur_len=kwargs["cur_len"],
+            # notice if the length of kv cache is smaller than budget, then the kv cache will not be compressed
+            compressed_key_states, compressed_value_states, pos_ids_cache = (
+                self.kv_cluster.update_kv(
+                    key_states=key_states,
+                    query_states=query_cache,
+                    value_states=value_states,
+                    pos_ids_cache=pos_ids_cache,
+                    cur_len=kwargs["cur_len"],
+                    attention_mask=(
+                        past_key_value.attention_mask
+                        if hasattr(past_key_value, "attention_mask")
+                        else None
+                    ),
+                    unfinished_sequences=past_key_value.unfinished_sequences,
+                )
             )
             past_key_value.key_cache[self.layer_idx] = compressed_key_states
             past_key_value.value_cache[self.layer_idx] = compressed_value_states
+            if pos_ids_cache is not None:
+                past_key_value.pos_ids_cache[self.layer_idx] = pos_ids_cache
+        # =============== end kv cache compression ================
+
+    if attention_mask is not None and attention_mask.shape[-1] > key_states.shape[-2]:
+        if len(attention_mask.shape) == 4:
+            # mask for eager attention
+            attention_mask = attention_mask[
+                :, :, -key_states.shape[-2] :, -key_states.shape[-2] :
+            ].contiguous()
+        elif len(attention_mask.shape) == 2:
+            # mask for flash attention
+            attention_mask = attention_mask[:, -key_states.shape[-2] :].contiguous()
 
     attention_interface: Callable = eager_attention_forward
     if self.config._attn_implementation != "eager":
@@ -584,9 +604,10 @@ def _sample(
     if model_kwargs.get("past_key_values") is not None:
         if hasattr(past_key_values, "pos_ids_cache"):
             pos_ids_cache = past_key_values.pos_ids_cache
-            self.pos_ids_cache = {}
+            np_cache=[]
             for layer_idx in pos_ids_cache:
-                self.pos_ids_cache[layer_idx] = pos_ids_cache[layer_idx].tolist()
+                np_cache.append(pos_ids_cache[layer_idx].cpu().numpy())
+            self.pos_ids_cache = np.array(np_cache)
 
     #  =============== end record pos ids ===============
     if streamer is not None:
@@ -625,7 +646,7 @@ def clear_score_cache(self):
             if hasattr(layer.self_attn.kv_cluster, "cached_score"):
                 if layer.self_attn.kv_cluster.cached_score is not None:
                     # score shape (B,H,L)
-                    score = layer.self_attn.kv_cluster.cached_score.tolist()
+                    score = layer.self_attn.kv_cluster.cached_score.float().cpu().numpy()
                     all_scores.append(score)
                     layer.self_attn.kv_cluster.cached_score = None
-    return all_scores
+    return np.array(all_scores)

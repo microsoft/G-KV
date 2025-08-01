@@ -1,6 +1,6 @@
+torch==2.6.0
 accelerate==1.6.0
 datasets==4.0.0
 flash-attn==2.7.4.post1
 transformers==4.51.0
 math-verify==0.8.0
-torch==2.6.0

@@ -228,6 +228,7 @@ class ImformativeKV:
 
             if attention_mask is not None:
                 # similarity cos may make score to be negative
+                # non-padding tokens may have lower score than the padding tokens
                 # so we need to set the score of padding tokens to the minimum value
                 # this will make sure the padding tokens always be evicted first
                 mask = (attention_mask == 0)[:, : -self.window_size].unsqueeze(1)
