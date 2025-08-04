@@ -76,7 +76,7 @@ def Qwen2Attention_init(
 def LLamaAttention_init(
     self, config: LlamaConfig, layer_idx: int, compression_config: dict
 ):
-    super().__init__()
+    nn.Module.__init__(self)
     self.config = config
     self.layer_idx = layer_idx
     self.head_dim = getattr(
@@ -271,11 +271,11 @@ def LLamaAttention_forward(
         )
 
         # =============== query cache ================
-
         if not hasattr(past_key_value, "query_cache"):
             past_key_value.query_cache = {}
         if self.layer_idx not in past_key_value.query_cache:
-            past_key_value.query_cache[self.layer_idx] = key_states[
+            # prefill stage, initial query cache
+            past_key_value.query_cache[self.layer_idx] = query_states[
                 :, :, -self.config.method_config["window_size"] :, :
             ]
         else:
@@ -602,8 +602,8 @@ def _sample(
     #  =============== record pos ids ===============
 
     if model_kwargs.get("past_key_values") is not None:
-        if hasattr(past_key_values, "pos_ids_cache"):
-            pos_ids_cache = past_key_values.pos_ids_cache
+        if hasattr(model_kwargs['past_key_values'], "pos_ids_cache"):
+            pos_ids_cache = model_kwargs['past_key_values'].pos_ids_cache
             np_cache=[]
             for layer_idx in pos_ids_cache:
                 np_cache.append(pos_ids_cache[layer_idx].cpu().numpy())

@@ -20,17 +20,17 @@ def replace_llama(compression_config):
         modeling_llama.LlamaForCausalLM.forward = CausalLM_forward
     else:
         from .ikv_modeling import (
-            LlamaAttention_init,
-            LlamaAttention_forward,
+            LLamaAttention_init,
+            LLamaAttention_forward,
             _sample,
             clear_score_cache,
         )
 
         def init_wrapper(self, config, layer_idx):
-            LlamaAttention_init(self, config, layer_idx, compression_config)
+            LLamaAttention_init(self, config, layer_idx, compression_config)
 
-        modeling_llama.LlamaAttention.__init__ = LlamaAttention_init
-        modeling_llama.LlamaAttention.forward = LlamaAttention_forward
+        modeling_llama.LlamaAttention.__init__ = init_wrapper
+        modeling_llama.LlamaAttention.forward = LLamaAttention_forward
         modeling_llama.LlamaForCausalLM.clear_score_cache = clear_score_cache
         GenerationMixin._sample = _sample
 

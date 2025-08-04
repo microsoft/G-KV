@@ -27,7 +27,7 @@ if __name__ == "__main__":
                 probs.append(args.budget / res[i]["total_tokens"])
             else:
                 probs.append(1)
-    print('pass@1: ',count / len(res))
+    print('pass@1: ',count / (len(res)+1e-6))
     if len(res)>0:
         print('compress rate: ',sum(probs)/count)
     else:
