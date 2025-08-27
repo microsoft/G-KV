@@ -3,8 +3,10 @@ torch==2.6.0
 torchvision==0.21.0
 torchaudio==2.6.0
 accelerate==1.6.0
+deepspeed==0.17.2
 datasets==4.0.0
 transformers==4.51.1
 math-verify==0.8.0
+tensorboardX==2.6.4
 
 # pip install flash-attn==2.7.4.post1 --no-cache-dir

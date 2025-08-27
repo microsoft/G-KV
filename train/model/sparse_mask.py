@@ -27,12 +27,23 @@ def build_causal_mask(attention_mask: torch.Tensor) -> torch.Tensor:
     return final_mask
 
 
-def build_stream_mask(input_ids, attention_mask):
-    pass
+def build_StreamingLLM_mask(
+    attention_mask: torch.Tensor, sink_len: int, window_size: int
+):
+    causal_mask = build_causal_mask(attention_mask)
+    return causal_mask
 
 
-def build_sepllm_mask(input_ids, attention_mask):
-    pass
+def build_SepLLM_mask(
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+    keep_dis: torch.Tensor,
+    sink_len: int,
+    cache_len: int,
+    window_size: int,
+):
+    causal_mask = build_causal_mask(attention_mask)
+    return causal_mask
 
 
 @torch.no_grad()
@@ -108,7 +119,9 @@ def build_sparse_mask(
             similarity_cos = similarity_cos.div_(
                 similarity_cos.max(dim=-1, keepdim=True).values
             )[:, :-window_size]
-            combined_score = final_score * mix_lambda - similarity_cos * (1 - mix_lambda)
+            combined_score = final_score * mix_lambda - similarity_cos * (
+                1 - mix_lambda
+            )
             # mask padding score
             mask = (window_attention_mask == 0)[:, :-window_size].unsqueeze(1)
             min_values = combined_score.min().item()

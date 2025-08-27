@@ -13,7 +13,7 @@ def collate_fn(batch, tokenizer, max_output_len: Optional[int] = None):
     prompts = [
         [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": item["question"]},
+            {"role": "user", "content": item["problem"]},
         ]
         for item in batch
     ]

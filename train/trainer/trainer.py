@@ -28,20 +28,25 @@ class Trainer:
         self.args = args
         self.max_train_steps = args.max_train_steps
         self.gradient_accumulation_steps = args.gradient_accumulation_steps
-
-        log_dir = os.path.join(args.output_dir, args.exp_name, "runs")
-        self.tb_writer = SummaryWriter(log_dir=log_dir)
+        if self.accelerator.is_main_process:
+            log_dir = os.path.join(args.output_dir, args.exp_name, "runs")
+            self.tb_writer = SummaryWriter(log_dir=log_dir)
+        else:
+            self.tb_writer = None
 
     def train(self):
         self.model.train()
-
-        tqdm_bar = tqdm(
-            total=self.max_train_steps,
-            desc="Training",
-        )
+        if self.accelerator.is_main_process:
+            tqdm_bar = tqdm(
+                total=self.max_train_steps,
+                desc="Training",
+            )
+        else:
+            tqdm_bar = None
         step = 0
         update_step = 0
         acc_loss = 0
+        step_per_epoch = len(self.dataloader)
 
         while update_step < self.max_train_steps:
             for _, batch in enumerate(self.dataloader):
@@ -56,10 +61,11 @@ class Trainer:
                     # deepspeed will automatically step optimizer when backward is called
                     # the following code actually does nothing
                     self.optimizer.step()
-                    tqdm_bar.update(1)
+                    if tqdm_bar is not None:
+                        tqdm_bar.update(1)
                     lr = self.scheduler.get_last_lr()[0]
                     status_dict = {
-                        "lr": lr,
+                        "train/lr": lr,
                     }
                     reduced_loss = torch.tensor(
                         acc_loss, device=self.accelerator.device
@@ -68,8 +74,10 @@ class Trainer:
                         reduced_loss, op=torch.distributed.ReduceOp.AVG
                     )
                     # tensor /= torch.distributed.get_world_size()
-                    status_dict['loss'] = reduced_loss.item()
-                    tqdm_bar.set_postfix(**status_dict)
+                    status_dict['train/loss'] = reduced_loss.item()
+                    status_dict['train/epoch'] = step / step_per_epoch
+                    if tqdm_bar is not None:
+                        tqdm_bar.set_postfix(**status_dict)
 
                     self.optimizer.zero_grad()
                     self.scheduler.step()

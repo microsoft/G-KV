@@ -15,9 +15,6 @@ from transformers import get_scheduler
 from torch.optim import AdamW
 
 
-
-
-
 def main(args):
     set_seed(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
@@ -30,32 +27,39 @@ def main(args):
 
     accelerator = Accelerator()
 
-    model = Qwen2SparseModelForCausalLM.from_pretrained(
-        args.model_name,
-        config=config
-    )
+    model = Qwen2SparseModelForCausalLM.from_pretrained(args.model_name, config=config)
     model.model.gradient_checkpointing_enable()
     model.train()
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
-    num_warmup_steps = int(args.max_train_steps * args.warmup_ratio)
+    
+    if dist.is_available() and dist.is_initialized():
+        world_size = dist.get_world_size()
+    else:
+        world_size = 1
+    num_warmup_steps = int(args.max_train_steps * args.warmup_ratio * world_size)
+
     lr_scheduler = get_scheduler(
         name=args.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=num_warmup_steps,
-        num_training_steps=args.max_train_steps,
+        num_training_steps=args.max_train_steps * world_size,
     )
     # dataset
-    dataloader = get_dataloader(args.dataset_path, tokenizer,args.max_output_len)
+    dataloader = get_dataloader(args.dataset_path, tokenizer, args.max_output_len)
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, dataloader, lr_scheduler)
-    
-    if accelerator.deepspeed_plugin is not None and hasattr(accelerator.deepspeed_plugin, 'gradient_accumulation_steps'):
-        args.gradient_accumulation_steps = accelerator.deepspeed_plugin.gradient_accumulation_steps
+        model, optimizer, dataloader, lr_scheduler
+    )
+
+    if accelerator.deepspeed_plugin is not None and hasattr(
+        accelerator.deepspeed_plugin, "gradient_accumulation_steps"
+    ):
+        args.gradient_accumulation_steps = (
+            accelerator.deepspeed_plugin.gradient_accumulation_steps
+        )
     else:
         args.gradient_accumulation_steps = 1
-
 
     trainer = Trainer(
         model=model,
@@ -96,11 +100,10 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
     parser.add_argument("--lr_scheduler_type", type=str, default="cosine")
     parser.add_argument("--learning_rate", type=float, default=1e-6)
-    parser.add_argument("--deepspeed_config", type=str, default='./configs/deepspeed_stage2.json')
 
     # other
-    parser.add_argument("--output_dir", type=str, default='./checkpoints')
-    parser.add_argument("--exp_name", type=str, default='default')
+    parser.add_argument("--output_dir", type=str, default="./checkpoints")
+    parser.add_argument("--exp_name", type=str, default="default")
     parser.add_argument("--save_steps", type=int, default=250)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
