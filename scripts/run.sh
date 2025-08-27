@@ -7,6 +7,7 @@ export VLLM_CACHE_ROOT=/local_nvme/.cache/vllm
 export TRITON_CACHE_DIR=/local_nvme/.cache/triton
 export TORCH_COMPILE_DEBUG_DIR=/local_nvme/.cache/torch_compile
 export TEMP=/local_nvme/tmp
+export CUDA_VISIBLE_DEVICES=4
 
 # --enable_pooling
 # --suppressing_redundancy
