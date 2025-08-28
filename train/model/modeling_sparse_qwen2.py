@@ -30,11 +30,13 @@ from torch.nn.attention.flex_attention import (
 )
 from functools import partial
 import math
-from .sparse_mask import build_sparse_mask
+from .sparse_mask import (
+    build_sparse_mask,
+    build_SepLLM_mask,
+    build_StreamingLLM_mask,
+    build_block_mask,
+)
 import torch.nn.functional as F
-
-KV_BLOCK_SIZE = 128
-Q_BLOCK_SIZE = 128
 
 
 class Qwen2SparseAttention(nn.Module):
@@ -73,46 +75,6 @@ class Qwen2SparseAttention(nn.Module):
         self.alpha = config.alpha if hasattr(config, "alpha") else 0.8
         self.mix_lambda = config.mix_lambda if hasattr(config, "mix_lambda") else 0.5
 
-    def build_block_mask(
-        self, attention_mask: torch.Tensor, num_query_heads: int
-    ) -> torch.Tensor:
-        """
-        build block mask from attention mask
-        attention mask: bool (bsz,kv_head,seq_len,seq_len), True means valid, False means masked
-        """
-
-        def repeat_mask(mask: torch.Tensor, n_rep: int) -> torch.Tensor:
-            """
-            This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The mask go from (batch,kv_head,seq_len,seq_len) to (batch,kv_head,seq_len,seq_len)
-            """
-            bsz, kv_head, seq_len, seq_len = mask.shape
-            return (
-                mask.unsqueeze(2)
-                .expand(bsz, kv_head, n_rep, seq_len, seq_len)
-                .reshape(bsz, kv_head * n_rep, seq_len, seq_len)
-            )
-
-        attention_mask = repeat_mask(
-            attention_mask, num_query_heads // attention_mask.shape[1]
-        )
-
-        def sparse_kernel(b, h, q_idx, kv_idx):
-            return attention_mask[b, h, q_idx, kv_idx].view([]).detach().clone()
-
-        B, H, Sq, Sk = attention_mask.shape
-
-        block_mask = create_block_mask(
-            sparse_kernel,
-            B,
-            H,
-            Sq,
-            Sk,
-            BLOCK_SIZE=(KV_BLOCK_SIZE, Q_BLOCK_SIZE),
-            device=attention_mask.device,
-            _compile=False,
-        )
-        return block_mask
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -133,7 +95,7 @@ class Qwen2SparseAttention(nn.Module):
             query_states, key_states, cos, sin
         )
 
-        if len(attention_mask.shape) == 2:
+        if isinstance(attention_mask, torch.Tensor) and len(attention_mask.shape) == 2:
             sparse_mask = build_sparse_mask(
                 query_states,
                 key_states,
@@ -145,10 +107,11 @@ class Qwen2SparseAttention(nn.Module):
                 alpha=self.alpha,
                 mix_lambda=self.mix_lambda,
             )
+            block_mask = build_block_mask(sparse_mask, query_states.shape[1])
         else:
-            sparse_mask = attention_mask
+            block_mask = attention_mask
 
-        block_mask = self.build_block_mask(sparse_mask, query_states.shape[1])
+        
 
         attn_output = flex_attention(
             query_states,
@@ -248,6 +211,15 @@ class Qwen2SparseModel(Qwen2PreTrainedModel):
         self.rotary_emb = Qwen2RotaryEmbedding(config=config)
         self.gradient_checkpointing = False
 
+        self.sparse_mode = (
+            config.sparse_mode if hasattr(config, "sparse_mode") else "dynamic"
+        )
+        self.sink_len = config.sink_len if hasattr(config, "sink_len") else 4
+        self.sep_cache_len = (
+            config.sep_cache_len if hasattr(config, "sep_cache_len") else 512
+        )
+        self.window_size = config.window_size if hasattr(config, "window_size") else 16
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -257,7 +229,28 @@ class Qwen2SparseModel(Qwen2PreTrainedModel):
         attention_mask: torch.Tensor,
         position_ids: torch.LongTensor,
         input_length: int,
+        sep_ids: Optional[torch.LongTensor] = None,
     ):
+        if self.sparse_mode == "sepllm":
+            assert sep_ids is not None, "sep_ids is required for sepllm mode"
+
+        if self.sparse_mode == "sepllm":
+            attention_mask = build_SepLLM_mask(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                keep_dis=sep_ids,
+                sink_len=self.sink_len,
+                sep_cache_len=self.sep_cache_len,
+                window_size=self.window_size,
+            )
+            attention_mask = build_block_mask(attention_mask, self.config.num_attention_heads)
+        elif self.sparse_mode == "stream":
+            attention_mask = build_StreamingLLM_mask(
+                attention_mask=attention_mask,
+                sink_len=self.sink_len,
+                window_size=self.window_size,
+            )
+            attention_mask = build_block_mask(attention_mask, self.config.num_attention_heads)
 
         inputs_embeds = self.embed_tokens(input_ids)
         hidden_states = inputs_embeds
@@ -309,6 +302,7 @@ class Qwen2SparseModelForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         position_ids: torch.LongTensor,
         logits_to_keep: int,
         labels: torch.LongTensor,
+        sep_ids: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[KwargsForCausalLM],
     ) -> CausalLMOutputWithPast:
         hidden_states = self.model(
@@ -316,6 +310,7 @@ class Qwen2SparseModelForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
             attention_mask=attention_mask,
             position_ids=position_ids,
             input_length=input_length,
+            sep_ids=sep_ids,
             **kwargs,
         )
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
@@ -331,9 +326,11 @@ class Qwen2SparseModelForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         )
 
         return loss
-    
+
     def loss_function(self, logits, labels, vocab_size, **kwargs):
-        logits=logits[:,:-1,:]
-        labels=labels[:,1:]
-        loss = F.cross_entropy(logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100)
+        logits = logits[:, :-1, :]
+        labels = labels[:, 1:]
+        loss = F.cross_entropy(
+            logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100
+        )
         return loss

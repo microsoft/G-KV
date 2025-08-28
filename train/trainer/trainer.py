@@ -29,6 +29,10 @@ class Trainer:
         self.max_train_steps = args.max_train_steps
         self.gradient_accumulation_steps = args.gradient_accumulation_steps
 
+        if self.args.sparse_mode == "sepllm":
+            self.sep_ids = torch.LongTensor(
+                self.tokenizer(args.kept_sep, add_special_tokens=False).input_ids
+            ).reshape(-1)
         if self.accelerator.is_main_process:
             log_dir = os.path.join(args.output_dir, args.exp_name, "runs")
             # tensorboard init
@@ -77,6 +81,8 @@ class Trainer:
             for _, batch in enumerate(self.dataloader):
                 if update_step >= self.max_train_steps:
                     break
+                if self.args.sparse_mode == "sepllm":
+                    batch["sep_ids"] = self.sep_ids
                 loss = self.model(**batch) / self.gradient_accumulation_steps
                 self.accelerator.backward(loss)
                 acc_loss += loss.item()

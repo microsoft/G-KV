@@ -24,6 +24,9 @@ def main(args):
     config.kv_budget = args.kv_budget
     config.alpha = args.alpha
     config.mix_lambda = args.mix_lambda
+    config.sparse_mode = args.sparse_mode
+    config.sink_len = args.sink_len
+    config.sep_cache_len = args.sep_cache_len
 
     accelerator = Accelerator()
 
@@ -93,7 +96,15 @@ if __name__ == "__main__":
         "--sparse_mode",
         type=str,
         choices=["sepllm", "stream", "dynamic"],
-        default="sparse",
+        default="stream",
+    )
+    parser.add_argument("--sink_len", type=int, default=4)
+    parser.add_argument("--sep_cache_len", type=int, default=512)
+    parser.add_argument(
+        "--kept_sep",
+        type=str,
+        nargs="+",
+        default=[".", ",", "?", "!", ";", ":", " ", "\t", "\n"],
     )
     # train
     parser.add_argument("--max_train_steps", type=int, default=1000)

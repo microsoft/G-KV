@@ -1,13 +1,13 @@
 set -x
 
-export CUDA_VISIBLE_DEVICES=3
-export HF_HOME=/local_nvme/liaomengqi/hugingface
-export TORCH_EXTENSIONS_DIR=/local_nvme/.cache/torch_extensions
-export VLLM_CACHE_ROOT=/local_nvme/.cache/vllm
-export TRITON_CACHE_DIR=/local_nvme/.cache/triton
-export TORCH_COMPILE_DEBUG_DIR=/local_nvme/.cache/torch_compile
-export TEMP=/local_nvme/tmp
-export CUDA_VISIBLE_DEVICES=4
+export CUDA_VISIBLE_DEVICES=7
+#export HF_HOME=/local_nvme/liaomengqi/hugingface
+#export TORCH_EXTENSIONS_DIR=/local_nvme/.cache/torch_extensions
+#export VLLM_CACHE_ROOT=/local_nvme/.cache/vllm
+#export TRITON_CACHE_DIR=/local_nvme/.cache/triton
+#export TORCH_COMPILE_DEBUG_DIR=/local_nvme/.cache/torch_compile
+#export TEMP=/local_nvme/tmp
+#export CUDA_VISIBLE_DEVICES=4
 
 # --enable_pooling
 # --suppressing_redundancy
@@ -23,24 +23,24 @@ export CUDA_VISIBLE_DEVICES=4
 
 
 
-# python3 ./run_math.py \
-# --dataset_path ./data/amc23.jsonl \
-# --save_path ./outputs/amc23_dsllma8b_gkv_alpha_0.jsonl \
-# --model_path deepseek-ai/DeepSeek-R1-Distill-Llama-8B \
-# --max_length 16384 \
-# --eval_batch_size 160 \
-# --method ikv \
-# --window_size 16 \
-# --divide_length 128 \
-# --kv_budget 512 \
-# --enable_score_cache \
-# --alpha 0 \
-# --suppressing_redundancy \
-# --mix_lambda 0.9 \
-# --n_sample 32 \
-# --do_sample \
-# --top_p 0.95 \
-# --temperature 0.6
+ python3 ./run_math.py \
+ --dataset_path ./data/amc23.jsonl \
+ --save_path ./outputs/amc23_gkv_train_500.jsonl \
+ --model_path ./checkpoints/qwen7b_gkv/checkpoint-500 \
+ --max_length 16384 \
+ --eval_batch_size 160 \
+ --method ikv \
+ --window_size 16 \
+ --divide_length 128 \
+ --kv_budget 512 \
+ --enable_score_cache \
+ --alpha 0.8 \
+ --suppressing_redundancy \
+ --mix_lambda 0.5 \
+ --n_sample 32 \
+ --do_sample \
+ --top_p 0.95 \
+ --temperature 0.6
 
 # python3 ./run_math.py \
 # --dataset_path ./data/aime24.jsonl \
@@ -56,18 +56,18 @@ export CUDA_VISIBLE_DEVICES=4
 # --top_p 0.95 \
 # --temperature 0.6
 
-python3 ./run_math.py \
---dataset_path ./data/aime24.jsonl \
---save_path ./outputs/aime24_dsqwen7b_fullkv.jsonl \
---model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
---max_length 32768 \
---eval_batch_size 16 \
---method fullkv \
---window_size 16 \
---divide_length 128 \
---n_sample 32 \
---do_sample \
---top_p 0.95 \
---temperature 0.6
+#python3 ./run_math.py \
+#--dataset_path ./data/aime24.jsonl \
+#--save_path ./outputs/aime24_dsqwen7b_fullkv.jsonl \
+#--model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+#--max_length 32768 \
+#--eval_batch_size 16 \
+#--method fullkv \
+#--window_size 16 \
+#--divide_length 128 \
+#--n_sample 32 \
+#--do_sample \
+#--top_p 0.95 \
+#--temperature 0.6
 
 # bash /cosmos/liaomengqi/gkv/scripts/loop.sh

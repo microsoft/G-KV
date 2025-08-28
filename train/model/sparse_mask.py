@@ -9,6 +9,9 @@ if Version(torch.__version__) >= Version("2.5.0"):
         create_block_mask,
     )
 
+KV_BLOCK_SIZE = 128
+Q_BLOCK_SIZE = 128
+
 
 def build_causal_mask(attention_mask: torch.Tensor) -> torch.Tensor:
     """
@@ -28,10 +31,31 @@ def build_causal_mask(attention_mask: torch.Tensor) -> torch.Tensor:
 
 
 def build_StreamingLLM_mask(
-    attention_mask: torch.Tensor, sink_len: int, window_size: int
+    attention_mask: torch.Tensor,
+    sink_len: int,
+    window_size: int,
+    return_all_mask: bool = False,
 ):
+    bsz, seq_len = attention_mask.shape
+    device = attention_mask.device
     causal_mask = build_causal_mask(attention_mask)
-    return causal_mask
+
+    # keep the first sink_len non-padding tokens
+    valid_token_count = attention_mask.cumsum(dim=1)
+    sink_mask = (valid_token_count <= sink_len) & (attention_mask == 1)
+    sink_mask = sink_mask.unsqueeze(1) & causal_mask
+
+    pos_indices = torch.arange(seq_len, device=device)
+    pos_diff = pos_indices.unsqueeze(1) - pos_indices.unsqueeze(
+        0
+    )  # pos_diff[i, j] = i - j
+    window_mask = (pos_diff <= window_size).unsqueeze(0).expand(bsz, -1, -1)
+    window_mask = window_mask & causal_mask
+
+    if return_all_mask:
+        return causal_mask, sink_mask, window_mask
+    else:
+        return sink_mask | window_mask
 
 
 def build_SepLLM_mask(
@@ -39,11 +63,58 @@ def build_SepLLM_mask(
     attention_mask: torch.Tensor,
     keep_dis: torch.Tensor,
     sink_len: int,
-    cache_len: int,
+    sep_cache_len: int,
     window_size: int,
 ):
-    causal_mask = build_causal_mask(attention_mask)
-    return causal_mask
+    """
+    Build SepLLM sparse attention mask
+
+    Args:
+        input_ids: (bsz, seq_len) Input token ids
+        attention_mask: (bsz, seq_len) Input attention mask
+        keep_dis: (n,) Token ids to be kept
+        sink_len: The first sink_len valid (non-padding) tokens will always be kept
+        sep_cache_len: Maximum cache length; non-sep tokens beyond this length will be dropped. If still exceeding kv_budget, the oldest tokens are dropped in order
+        window_size: The rightmost window_size tokens will be kept
+
+    Returns:
+        Sparse attention mask: (bsz, seq_len, seq_len), True means valid, False means masked
+    """
+    bsz, seq_len = input_ids.shape
+    device = input_ids.device
+
+    causal_mask, sink_mask, window_mask = build_StreamingLLM_mask(
+        attention_mask, sink_len, window_size, return_all_mask=True
+    )
+
+    sep_mask = torch.zeros_like(input_ids, dtype=torch.bool, device=device)
+    for token_id in keep_dis:
+        sep_mask |= input_ids == token_id
+    sep_mask = sep_mask.unsqueeze(1) & causal_mask
+
+    # a non-sep token can be reserved only when
+    # 1) left sep token < sep_cache_len
+    # 2) right token < window_size + sep_cache_len - (left sep token)
+    non_sink_sep_mask = sep_mask & ~sink_mask
+    non_sep_mask = causal_mask & ~sep_mask & ~sink_mask
+    num_sep_left = non_sink_sep_mask.long().cumsum(dim=-1)
+    right_token = causal_mask.flip(dims=[2]).long().cumsum(dim=-1).flip(dims=[2])
+    kept_non_sep_mask = non_sep_mask & (
+        (num_sep_left < sep_cache_len)
+        & (right_token < (window_size + sep_cache_len - num_sep_left))
+    )
+
+    # a sep token can be reserved only when
+    # 1) right sep token < sep_cache_len
+    non_window_sep_mask = sep_mask & ~window_mask
+    num_sep_right = (
+        non_window_sep_mask.flip(dims=[2]).long().cumsum(dim=-1).flip(dims=[2])
+    )
+    kept_sep_mask = sep_mask & (num_sep_right < sep_cache_len)
+
+    sepllm_mask = sink_mask | window_mask | kept_non_sep_mask | kept_sep_mask
+
+    return sepllm_mask
 
 
 @torch.no_grad()
@@ -155,24 +226,51 @@ def build_sparse_mask(
     return causal_mask
 
 
-# def get_block_mask(
-#     input_ids, attention_mask
-# ):
+def build_block_mask(
+    attention_mask: torch.Tensor, num_query_heads: int
+) -> torch.Tensor:
+    """
+    build block mask from attention mask
+    attention mask: bool (bsz,kv_head,seq_len,seq_len), True means valid, False means masked
+    """
 
-#     def sparse_kernel(b, h, q_idx, kv_idx):
-#         aa = attention_mask[b, h, q_idx, kv_idx]
-#         return aa.view([]).detach().clone()
+    def repeat_mask(mask: torch.Tensor, n_rep: int) -> torch.Tensor:
+        """
+        This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The mask go from (batch,kv_head,seq_len,seq_len) to (batch,kv_head,seq_len,seq_len)
+        """
+        bsz, kv_head, seq_len, seq_len = mask.shape
+        return (
+            mask.unsqueeze(2)
+            .expand(bsz, kv_head, n_rep, seq_len, seq_len)
+            .reshape(bsz, kv_head * n_rep, seq_len, seq_len)
+        )
 
-#     B, H, Sq, Sk = attention_mask.shape
+    if len(attention_mask.shape) == 4:
 
-#     block_mask = create_block_mask(
-#         sparse_kernel,
-#         B,
-#         H,
-#         Sq,
-#         Sk,
-#         BLOCK_SIZE=(KV_BLOCK_SIZE, Q_BLOCK_SIZE),
-#         device=input_ids.device,
-#         _compile=False,
-#     )
-#     return block_mask
+        attention_mask = repeat_mask(
+            attention_mask, num_query_heads // attention_mask.shape[1]
+        )
+
+        def sparse_kernel(b, h, q_idx, kv_idx):
+            return attention_mask[b, h, q_idx, kv_idx].view([]).detach().clone()
+
+        B, H, Sq, Sk = attention_mask.shape
+    elif len(attention_mask.shape)==3:
+        B, Sq, Sk = attention_mask.shape
+        H = num_query_heads
+        def sparse_kernel(b, h, q_idx, kv_idx):
+            return attention_mask[b, q_idx, kv_idx].view([]).detach().clone()
+    else:
+        raise ValueError(f"Invalid attention mask shape: {attention_mask.shape}")
+        
+    block_mask = create_block_mask(
+        sparse_kernel,
+        B,
+        H,
+        Sq,
+        Sk,
+        BLOCK_SIZE=(KV_BLOCK_SIZE, Q_BLOCK_SIZE),
+        device=attention_mask.device,
+        _compile=False,
+    )
+    return block_mask
