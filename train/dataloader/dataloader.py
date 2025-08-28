@@ -70,7 +70,7 @@ def collate_fn(batch, tokenizer, max_output_len: Optional[int] = None):
 
 
 def get_dataloader(dataset_path,  tokenizer,max_output_len:Optional[int]=None):
-    dataset = load_dataset("json", data_files=dataset_path, split="train")
+    dataset = load_dataset(dataset_path, split="train")
 
     dataloader = DataLoader(
         dataset,

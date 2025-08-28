@@ -4,8 +4,8 @@ from tqdm import tqdm
 from accelerate import Accelerator
 import os
 import json
-from tensorboardX import SummaryWriter
 from transformers import PreTrainedTokenizer
+from datetime import datetime
 
 
 class Trainer:
@@ -28,11 +28,36 @@ class Trainer:
         self.args = args
         self.max_train_steps = args.max_train_steps
         self.gradient_accumulation_steps = args.gradient_accumulation_steps
+
         if self.accelerator.is_main_process:
             log_dir = os.path.join(args.output_dir, args.exp_name, "runs")
-            self.tb_writer = SummaryWriter(log_dir=log_dir)
+            # tensorboard init
+            try:
+                from tensorboardX import SummaryWriter
+
+                self.tb_writer = SummaryWriter(log_dir=log_dir)
+            except ImportError:
+                print("tensorboardX is not installed, skipping tensorboard logging.")
+                self.tb_writer = None
+            # wandb init
+            try:
+                import wandb
+
+                wandb.init(
+                    project=getattr(args, "wandb_project", "default_project"),
+                    name=args.exp_name + datetime.now().strftime("%Y%m%d_%H%M%S"),
+                    dir=args.output_dir,
+                    config=vars(args) if args is not None else {},
+                    reinit=True,
+                )
+                self.wandb = wandb
+            except ImportError:
+                print("wandb is not installed, skipping wandb logging.")
+                self.wandb = None
+
         else:
             self.tb_writer = None
+            self.wandb = None
 
     def train(self):
         self.model.train()
@@ -74,8 +99,8 @@ class Trainer:
                         reduced_loss, op=torch.distributed.ReduceOp.AVG
                     )
                     # tensor /= torch.distributed.get_world_size()
-                    status_dict['train/loss'] = reduced_loss.item()
-                    status_dict['train/epoch'] = step / step_per_epoch
+                    status_dict["train/loss"] = reduced_loss.item()
+                    status_dict["train/epoch"] = step / step_per_epoch
                     if tqdm_bar is not None:
                         tqdm_bar.set_postfix(**status_dict)
 
@@ -91,9 +116,16 @@ class Trainer:
 
     def log_and_save(self, status_dict, step):
         if self.accelerator.is_main_process:
-            for key, value in status_dict.items():
-                self.tb_writer.add_scalar(key, value, step)
-            self.tb_writer.flush()
+            # tensorboard
+            if self.tb_writer is not None:
+                for key, value in status_dict.items():
+                    self.tb_writer.add_scalar(key, value, step)
+                self.tb_writer.flush()
+            # wandb
+            if self.wandb is not None:
+                self.wandb.log(status_dict)
+
+            # save checkpoint
             if step % self.args.save_steps == 0:
                 self.save_checkpoint(step)
 

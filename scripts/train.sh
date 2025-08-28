@@ -1,15 +1,8 @@
 #!/bin/bash
 
-# 设置环境变量
-export HF_HOME=/local_nvme/liaomengqi/hugingface
-export TORCH_EXTENSIONS_DIR=/local_nvme/.cache/torch_extensions
-export VLLM_CACHE_ROOT=/local_nvme/.cache/vllm
-export TRITON_CACHE_DIR=/local_nvme/.cache/triton
-export TORCH_COMPILE_DEBUG_DIR=/local_nvme/.cache/torch_compile
-export TEMP=/local_nvme/tmp
 
 MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" 
-DATASET_PATH="data/valid_train_data_27k.json"
+DATASET_PATH="mqliao/gkv_distill_math_27k"
 
 
 # Sparse parameters
@@ -21,12 +14,12 @@ MIX_LAMBDA=0.5
 
 # train parameters
 LEARNING_RATE=1e-6
-EXP_NAME="test"
+EXP_NAME="qwen7b_gkv"
 MAX_TRAIN_STEPS=1000
 MAX_OUTPUT_LEN=4096
 
-VISIBLE_DEVICES=0,1,2,3 accelerate launch \
-    --num_processes 4 \
+accelerate launch \
+    --num_processes 8 \
     --config_file ./configs/acce_config.yaml \
     -m train.tain_main \
     --model_name $MODEL_NAME \

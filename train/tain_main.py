@@ -32,7 +32,7 @@ def main(args):
     model.train()
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
-    
+
     if dist.is_available() and dist.is_initialized():
         world_size = dist.get_world_size()
     else:
@@ -100,6 +100,14 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
     parser.add_argument("--lr_scheduler_type", type=str, default="cosine")
     parser.add_argument("--learning_rate", type=float, default=1e-6)
+    # log
+    parser.add_argument(
+        "--log_method",
+        type=str,
+        choices=["wandb", "tensorboard", "none"],
+        default=["wandb", "tensorboard"],
+    )
+    parser.add_argument("--wandb_project", type=str, default="sparse_kv_training")
 
     # other
     parser.add_argument("--output_dir", type=str, default="./checkpoints")
