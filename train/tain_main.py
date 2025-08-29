@@ -6,6 +6,7 @@ from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from transformers import AutoTokenizer, AutoConfig
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
 from train.model.modeling_sparse_qwen2 import Qwen2SparseModelForCausalLM
+from transformers import AutoModelForCausalLM
 from train.dataloader.dataloader import get_dataloader
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 from accelerate import Accelerator
@@ -33,6 +34,28 @@ def main(args):
     model = Qwen2SparseModelForCausalLM.from_pretrained(args.model_name, config=config)
     model.model.gradient_checkpointing_enable()
     model.train()
+    ref_model = None
+
+    if args.use_kl_loss:
+        if args.ref_model_divice is None:
+            # each process will load a ref model
+            ref_model_divice = accelerator.device
+            ref_model = AutoModelForCausalLM.from_pretrained(
+                args.model_name,
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2",
+            )
+            ref_model.to(ref_model_divice)
+        else:
+            # only load one ref model on the main process
+            ref_model_divice = f"cuda:{args.ref_model_divice}"
+            if accelerator.is_main_process and args.use_kl_loss:
+                ref_model = AutoModelForCausalLM.from_pretrained(
+                    args.model_name,
+                    torch_dtype=torch.bfloat16,
+                    attn_implementation="flash_attention_2",
+                )
+                ref_model.to(ref_model_divice)
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
 
@@ -71,6 +94,7 @@ def main(args):
         scheduler=lr_scheduler,
         dataloader=dataloader,
         accelerator=accelerator,
+        ref_model=ref_model,
         args=args,
     )
     trainer.train()
@@ -82,6 +106,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # model
     parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument("--ref_model_divice", type=int, default=None)
 
     # dataset
     parser.add_argument("--dataset_path", type=str, required=True)
@@ -111,6 +136,11 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
     parser.add_argument("--lr_scheduler_type", type=str, default="cosine")
     parser.add_argument("--learning_rate", type=float, default=1e-6)
+
+    # loss
+    parser.add_argument("--use_kl_loss", action="store_true")
+    parser.add_argument("--temperature", type=float, default=0.6)
+
     # log
     parser.add_argument(
         "--log_method",

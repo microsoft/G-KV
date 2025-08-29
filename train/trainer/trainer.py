@@ -6,6 +6,7 @@ import os
 import json
 from transformers import PreTrainedTokenizer
 from datetime import datetime
+import torch.nn.functional as F
 
 
 class Trainer:
@@ -17,6 +18,7 @@ class Trainer:
         scheduler: torch.optim.lr_scheduler.LRScheduler,
         dataloader: torch.utils.data.DataLoader,
         accelerator: Accelerator,
+        ref_model: torch.nn.Module,
         args=None,
     ):
         self.model = model
@@ -25,6 +27,7 @@ class Trainer:
         self.scheduler = scheduler
         self.dataloader = dataloader
         self.accelerator: Accelerator = accelerator
+        self.ref_model = ref_model
         self.args = args
         self.max_train_steps = args.max_train_steps
         self.gradient_accumulation_steps = args.gradient_accumulation_steps
@@ -83,9 +86,29 @@ class Trainer:
                     break
                 if self.args.sparse_mode == "sepllm":
                     batch["sep_ids"] = self.sep_ids
-                loss = self.model(**batch) / self.gradient_accumulation_steps
+                logits = self.model(**batch)
+                if self.args.use_kl_loss:
+                    if self.args.ref_model_divice is None:
+                        # each process will load a ref model
+                        labels = batch.pop("labels")
+                        with torch.no_grad():
+                            ref_logits = self.ref_model(**batch).logits
+                        loss, token_mean_loss = self.kl_loss(logits, ref_logits, labels)
+                        token_mean_loss /= self.gradient_accumulation_steps
+                    else:
+                        # allreduce input to main process
+                        # scatter output to each process
+                        raise NotImplementedError("Not implemented")
+                else:
+                    loss = self.cross_entropy_loss(
+                        logits, batch["labels"], self.model.module.config.vocab_size
+                    )
+                loss = loss / self.gradient_accumulation_steps
                 self.accelerator.backward(loss)
-                acc_loss += loss.item()
+                if self.args.use_kl_loss:
+                    acc_loss += token_mean_loss
+                else:
+                    acc_loss += loss.item()
                 step += 1
                 if (step) % self.gradient_accumulation_steps == 0:
                     update_step += 1
@@ -119,6 +142,28 @@ class Trainer:
                 torch.cuda.empty_cache()
             if self.accelerator.is_main_process:
                 pass
+
+    def cross_entropy_loss(self, logits, labels, vocab_size):
+        logits = logits[:, :-1, :]
+        labels = labels[:, 1:]
+        loss = F.cross_entropy(
+            logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100
+        )
+        return loss
+
+    def kl_loss(self, logits, ref_logits, label, **kwargs):
+        """
+        soft target loss
+        """
+        p = F.log_softmax(logits.div(self.args.temperature), dim=-1)
+        q = F.softmax(ref_logits.div(self.args.temperature), dim=-1)
+        loss = F.kl_div(p, q, reduction="none").sum(dim=-1)
+        mask = label != -100
+        loss = loss * mask
+        with torch.no_grad():
+            token_mean_loss = (loss.sum() / mask.sum()).item()
+        loss = loss.sum(dim=-1) / logits.shape[0]
+        return loss * (self.args.temperature**2), token_mean_loss
 
     def log_and_save(self, status_dict, step):
         if self.accelerator.is_main_process:

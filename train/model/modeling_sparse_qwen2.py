@@ -320,17 +320,6 @@ class Qwen2SparseModelForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
             else logits_to_keep
         )
         logits = self.lm_head(hidden_states[:, slice_indices, :])
+        return logits
 
-        loss = self.loss_function(
-            logits=logits, labels=labels, vocab_size=self.config.vocab_size, **kwargs
-        )
-
-        return loss
-
-    def loss_function(self, logits, labels, vocab_size, **kwargs):
-        logits = logits[:, :-1, :]
-        labels = labels[:, 1:]
-        loss = F.cross_entropy(
-            logits.view(-1, vocab_size), labels.view(-1), ignore_index=-100
-        )
-        return loss
+    
