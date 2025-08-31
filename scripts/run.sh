@@ -25,14 +25,14 @@ export CUDA_VISIBLE_DEVICES=7
 
  python3 ./run_math.py \
  --dataset_path ./data/amc23.jsonl \
- --save_path ./outputs/amc23_gkv_train_256.jsonl \
- --model_path ./checkpoints/qwen7b_gkv/checkpoint-500 \
+ --save_path ./outputs/amc23_kl_train_512.jsonl \
+ --model_path ./checkpoints/qwen7b_kv_dynamic/checkpoint-250 \
  --max_length 16384 \
  --eval_batch_size 160 \
  --method ikv \
  --window_size 16 \
  --divide_length 128 \
- --kv_budget 256 \
+ --kv_budget 512 \
  --enable_score_cache \
  --alpha 0.8 \
  --suppressing_redundancy \

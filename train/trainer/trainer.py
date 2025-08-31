@@ -92,7 +92,10 @@ class Trainer:
                         # each process will load a ref model
                         labels = batch.pop("labels")
                         with torch.no_grad():
+                            self.ref_model.to(self.accelerator.device)
                             ref_logits = self.ref_model(**batch).logits
+                            if self.args.ref_model_offload:
+                                self.ref_model.to("cpu")
                         loss, token_mean_loss = self.kl_loss(logits, ref_logits, labels)
                         token_mean_loss /= self.gradient_accumulation_steps
                     else:

@@ -37,25 +37,11 @@ def main(args):
     ref_model = None
 
     if args.use_kl_loss:
-        if args.ref_model_divice is None:
-            # each process will load a ref model
-            ref_model_divice = accelerator.device
-            ref_model = AutoModelForCausalLM.from_pretrained(
-                args.model_name,
-                torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",
-            )
-            ref_model.to(ref_model_divice)
-        else:
-            # only load one ref model on the main process
-            ref_model_divice = f"cuda:{args.ref_model_divice}"
-            if accelerator.is_main_process and args.use_kl_loss:
-                ref_model = AutoModelForCausalLM.from_pretrained(
-                    args.model_name,
-                    torch_dtype=torch.bfloat16,
-                    attn_implementation="flash_attention_2",
-                )
-                ref_model.to(ref_model_divice)
+        ref_model = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+        )
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
 
@@ -107,6 +93,7 @@ if __name__ == "__main__":
     # model
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--ref_model_divice", type=int, default=None)
+    parser.add_argument("--ref_model_offload", action="store_true")
 
     # dataset
     parser.add_argument("--dataset_path", type=str, required=True)
@@ -121,7 +108,7 @@ if __name__ == "__main__":
         "--sparse_mode",
         type=str,
         choices=["sepllm", "stream", "dynamic"],
-        default="stream",
+        default="dynamic",
     )
     parser.add_argument("--sink_len", type=int, default=4)
     parser.add_argument("--sep_cache_len", type=int, default=512)
@@ -136,8 +123,6 @@ if __name__ == "__main__":
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
     parser.add_argument("--lr_scheduler_type", type=str, default="cosine")
     parser.add_argument("--learning_rate", type=float, default=1e-6)
-
-    # loss
     parser.add_argument("--use_kl_loss", action="store_true")
     parser.add_argument("--temperature", type=float, default=0.6)
 

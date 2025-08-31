@@ -7,15 +7,15 @@ DATASET_PATH="mqliao/gkv_distill_math_27k"
 
 # Sparse parameters
 COMPRESS_STEP=128
-WINDOW_SIZE=16
+WINDOW_SIZE=512
 KV_BUDGET=512
 ALPHA=0.8
 MIX_LAMBDA=0.5
 
 # train parameters
-LEARNING_RATE=1e-6
-EXP_NAME="qwen7b_gkv"
-MAX_TRAIN_STEPS=1000
+LEARNING_RATE=5e-7
+EXP_NAME="qwen7b_kv_stream_bsz64_lr5e7"
+MAX_TRAIN_STEPS=500
 MAX_OUTPUT_LEN=4096
 
 accelerate launch \
@@ -25,6 +25,10 @@ accelerate launch \
     --model_name $MODEL_NAME \
     --dataset_path $DATASET_PATH \
     --learning_rate $LEARNING_RATE \
+    --sparse_mode stream \
+    --exp_name qwen_dynamic_kl \
+    --use_kl_loss \
+    --ref_model_offload \
     --compress_step $COMPRESS_STEP \
     --window_size $WINDOW_SIZE \
     --kv_budget $KV_BUDGET \
