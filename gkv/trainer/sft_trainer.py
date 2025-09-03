@@ -7,6 +7,7 @@ import json
 from transformers import PreTrainedTokenizer
 from datetime import datetime
 import torch.nn.functional as F
+from gkv.reward.math_reward_fn import compute_score
 
 
 class Trainer:
@@ -17,6 +18,7 @@ class Trainer:
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler.LRScheduler,
         dataloader: torch.utils.data.DataLoader,
+        eval_dataloader: torch.utils.data.DataLoader,
         accelerator: Accelerator,
         ref_model: torch.nn.Module,
         args=None,
@@ -26,13 +28,15 @@ class Trainer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.dataloader = dataloader
+        self.eval_dataloader = eval_dataloader
         self.accelerator: Accelerator = accelerator
         self.ref_model = ref_model
         self.args = args
         self.max_train_steps = args.max_train_steps
         self.gradient_accumulation_steps = args.gradient_accumulation_steps
+        self.evaluate_fn = compute_score
 
-        if self.args.sparse_mode == "sepllm":
+        if self.args.method == "sepllm":
             self.sep_ids = torch.LongTensor(
                 self.tokenizer(args.kept_sep, add_special_tokens=False).input_ids
             ).reshape(-1)
@@ -84,19 +88,25 @@ class Trainer:
             for _, batch in enumerate(self.dataloader):
                 if update_step >= self.max_train_steps:
                     break
-                if self.args.sparse_mode == "sepllm":
+                if self.args.method == "sepllm":
                     batch["sep_ids"] = self.sep_ids
-                logits = self.model(**batch)
+                labels = batch.pop("labels")
+                self.model.train()
+                output = self.model(**batch, use_cache=False)
+                output.logits = output.logits.to(torch.float32)
                 if self.args.use_kl_loss:
                     if self.args.ref_model_divice is None:
                         # each process will load a ref model
-                        labels = batch.pop("labels")
                         with torch.no_grad():
                             self.ref_model.to(self.accelerator.device)
-                            ref_logits = self.ref_model(**batch).logits
+                            ref_logits = self.ref_model(
+                                **batch, use_cache=False
+                            ).logits.to(torch.float32)
                             if self.args.ref_model_offload:
                                 self.ref_model.to("cpu")
-                        loss, token_mean_loss = self.kl_loss(logits, ref_logits, labels)
+                        loss, token_mean_loss = self.kl_loss(
+                            output.logits, ref_logits, labels
+                        )
                         token_mean_loss /= self.gradient_accumulation_steps
                     else:
                         # allreduce input to main process
@@ -104,8 +114,9 @@ class Trainer:
                         raise NotImplementedError("Not implemented")
                 else:
                     loss = self.cross_entropy_loss(
-                        logits, batch["labels"], self.model.module.config.vocab_size
+                        output.logits, labels, self.model.module.config.vocab_size
                     )
+                torch.cuda.empty_cache()
                 loss = loss / self.gradient_accumulation_steps
                 self.accelerator.backward(loss)
                 if self.args.use_kl_loss:
@@ -118,29 +129,30 @@ class Trainer:
                     # deepspeed will automatically step optimizer when backward is called
                     # the following code actually does nothing
                     self.optimizer.step()
-                    if tqdm_bar is not None:
-                        tqdm_bar.update(1)
+                    self.optimizer.zero_grad()
                     lr = self.scheduler.get_last_lr()[0]
                     status_dict = {
                         "train/lr": lr,
+                        "train/loss": acc_loss,
                     }
-                    reduced_loss = torch.tensor(
-                        acc_loss, device=self.accelerator.device
-                    )
-                    torch.distributed.all_reduce(
-                        reduced_loss, op=torch.distributed.ReduceOp.AVG
-                    )
+                    if update_step % self.args.eval_steps == 0 and self.eval_dataloader is not None:
+                        acc = self.evaluate()
+                        status_dict["eval/acc"] = acc
                     # tensor /= torch.distributed.get_world_size()
-                    status_dict["train/loss"] = reduced_loss.item()
+                    world_size = torch.distributed.get_world_size()
+                    obj_list = [None for _ in range(world_size)]
+                    torch.distributed.all_gather_object(obj_list, status_dict)
+                    for key in status_dict.keys():
+                        status_dict[key] = sum([obj[key] for obj in obj_list]) / len(obj_list)
                     status_dict["train/epoch"] = step / step_per_epoch
                     if tqdm_bar is not None:
+                        tqdm_bar.update(1)
                         tqdm_bar.set_postfix(**status_dict)
-
-                    self.optimizer.zero_grad()
                     self.scheduler.step()
                     self.log_and_save(status_dict, update_step)
                     torch.distributed.barrier()
                     acc_loss = 0
+                
 
                 torch.cuda.empty_cache()
             if self.accelerator.is_main_process:
@@ -182,6 +194,70 @@ class Trainer:
             # save checkpoint
             if step % self.args.save_steps == 0:
                 self.save_checkpoint(step)
+
+    def evaluate(self):
+        acc = []
+        for batch in self.eval_dataloader:
+            prompts = []
+            answers = []
+            for item in batch:
+                for _ in range(self.args.eval_sample_n):
+                    prompts.append(item["prompt"])
+                    answers.append(item["answer"])
+            for i in range(0, len(prompts), self.args.eval_batch_size_per_gpu):
+                batch_prompts = prompts[i : i + self.args.eval_batch_size_per_gpu]
+                batch_answers = answers[i : i + self.args.eval_batch_size_per_gpu]
+                inputs = self.tokenizer(
+                    batch_prompts,
+                    return_tensors="pt",
+                    add_special_tokens=False,
+                    padding=True,
+                ).to(self.accelerator.device)
+                sequences = self.generate(
+                    inputs,
+                    do_sample=self.args.eval_do_sample,
+                )
+                output_ids = sequences[:, inputs.input_ids.shape[1] :]
+                output_texts = self.tokenizer.batch_decode(
+                    output_ids, skip_special_tokens=True
+                )
+                for j in range(len(batch_prompts)):
+                    acc.append(self.evaluate_fn(batch_answers[j], output_texts[j]))
+
+            acc = sum(acc) / len(acc)
+            torch.cuda.empty_cache()
+            torch.distributed.barrier()
+            return acc
+
+    def generate(self, inputs, do_sample=True, temperature=None):
+        unwrap_model = self.accelerator.unwrap_model(self.model)
+        unwrap_model.eval()
+        if do_sample:
+            sample_args = {
+                "do_sample": True,
+                "max_new_tokens": self.args.max_new_tokens,
+                "temperature": (
+                    self.args.temperature if temperature is None else temperature
+                ),
+                "top_p": self.args.top_p,
+                "eos_token_id": self.tokenizer.eos_token_id,
+                "pad_token_id": self.tokenizer.pad_token_id,
+                "return_dict_in_generate": True,
+            }
+        else:
+            sample_args = {
+                "do_sample": False,
+                "max_new_tokens": self.args.max_new_tokens,
+                "eos_token_id": self.tokenizer.eos_token_id,
+                "pad_token_id": self.tokenizer.pad_token_id,
+                "return_dict_in_generate": True,
+                "top_p": None,
+            }
+        outputs = unwrap_model.generate(
+            **inputs,
+            **sample_args,
+        )
+        return outputs.sequences
 
     def save_checkpoint(self, step):
         unwrapped_model = self.accelerator.unwrap_model(self.model)

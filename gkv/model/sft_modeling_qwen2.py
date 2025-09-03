@@ -320,6 +320,6 @@ class Qwen2SparseModelForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
             else logits_to_keep
         )
         logits = self.lm_head(hidden_states[:, slice_indices, :])
-        return logits
+        return logits.to(torch.float32)
 
     

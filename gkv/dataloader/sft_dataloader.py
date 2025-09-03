@@ -35,13 +35,13 @@ def collate_fn(batch, tokenizer, max_output_len: Optional[int] = None):
         "position_ids": [],
         "labels": [],
         "input_length": input_len,
-        "logits_to_keep": min(output_len,max_output_len),
+        "logits_to_keep": min(output_len, max_output_len),
     }
 
     for i in range(len(prompt_ids)):
         num_left_padding = input_len - len(prompt_ids[i])
         num_right_padding = output_len - len(output_ids[i])
-        trunked_len=input_len+min(output_len,max_output_len)
+        trunked_len = input_len + min(output_len, max_output_len)
         input_ids = (
             [tokenizer.pad_token_id] * num_left_padding
             + prompt_ids[i]
@@ -51,7 +51,9 @@ def collate_fn(batch, tokenizer, max_output_len: Optional[int] = None):
 
         res_dict["input_ids"].append(input_ids)
         res_dict["attention_mask"].append(
-            ([0] * num_left_padding + [1] * (len(input_ids) - num_left_padding))[:trunked_len]
+            ([0] * num_left_padding + [1] * (len(input_ids) - num_left_padding))[
+                :trunked_len
+            ]
         )
         position_ids = (
             [0] * num_left_padding
@@ -59,7 +61,9 @@ def collate_fn(batch, tokenizer, max_output_len: Optional[int] = None):
             + [0] * num_right_padding
         )[:trunked_len]
         res_dict["position_ids"].append(position_ids)
-        res_dict["labels"].append((output_ids[i] + [-100] * num_right_padding)[:max_output_len])
+        res_dict["labels"].append(
+            (output_ids[i] + [-100] * num_right_padding)[:max_output_len]
+        )
 
     res_dict["input_ids"] = torch.tensor(res_dict["input_ids"])
     res_dict["attention_mask"] = torch.tensor(res_dict["attention_mask"])
@@ -69,12 +73,30 @@ def collate_fn(batch, tokenizer, max_output_len: Optional[int] = None):
     return res_dict
 
 
-def get_dataloader(dataset_path,  tokenizer,max_output_len:Optional[int]=None):
+def get_dataloader(dataset_path, tokenizer, max_output_len: Optional[int] = None):
     dataset = load_dataset(dataset_path, split="train")
 
     dataloader = DataLoader(
         dataset,
         shuffle=True,
-        collate_fn=partial(collate_fn, tokenizer=tokenizer,max_output_len=max_output_len),
+        collate_fn=partial(
+            collate_fn, tokenizer=tokenizer, max_output_len=max_output_len
+        ),
     )
     return dataloader
+
+
+def get_eval_dataloader(
+    dataset_path, tokenizer, eval_split_len=32, world_size=1
+):
+    
+    from .rl_dataloader import collate_fn
+    dataset = load_dataset(dataset_path, split="train")
+    dataset = dataset.shuffle(seed=42)
+    eval_dataset = dataset.select(range(0, eval_split_len))
+    eval_dataloader = DataLoader(
+        eval_dataset,
+        collate_fn=partial(collate_fn, tokenizer=tokenizer),
+        batch_size=eval_split_len // world_size,
+    )
+    return eval_dataloader

@@ -2,88 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
-from . import cal_similarity
 import math
+from gkv.utils.compression_score import compute_attention_scores, cal_similarity
+from gkv.model.sparse_mask import expand_sparse_mask
 
 
-@torch.no_grad()
-def compute_attention_scores(
-    query_states, key_states, pooling="max", attention_mask=None
-):
-    """
-    query_states: (bsz, q_heads, q_len, head_dim)
-    key_states: (bsz, kv_heads, kv_cache_len, head_dim)
-    return: (bsz, kv_heads, q_len, kv_cache_len - q_len)
-    attention_mask: attention mask (bsz, kv_cache_len)
-    """
-    batch_size, q_heads, q_len, head_dim = query_states.shape
-    kv_heads = key_states.shape[1]
-    kv_cache_len = key_states.shape[2]
-    query_group_size = q_heads // kv_heads
-
-    # shape: [batch_size, kv_heads, query_group_size, q_len, head_dim]
-    query_states = query_states.view(
-        batch_size, kv_heads, query_group_size, q_len, head_dim
-    )
-
-    # shape: [batch_size, kv_heads, 1, kv_cache_len, head_dim]
-    key_states = key_states.unsqueeze(2)
-
-    # we first normalize the key_states for better numerical stability
-    key_states = key_states / math.sqrt(head_dim)
-    # shape: [batch_size, kv_heads, query_group_size, q_len, kv_cache_len]
-    attn_weights = torch.matmul(query_states, key_states.transpose(3, 4))
-
-    if attention_mask is not None and torch.any(attention_mask == 0):
-        if attention_mask.dim() == 2:
-            # build causal mask (bsz,1,kv_cache_len,kv_cache_len) from attention_mask (bsz,kv_cache_len)
-            # shape: (kv_cache_len, kv_cache_len)
-            causal_mask = torch.triu(
-                torch.ones(
-                    kv_cache_len,
-                    kv_cache_len,
-                    device=attn_weights.device,
-                    dtype=torch.bool,
-                ),
-                diagonal=1,
-            )
-            causal_mask = causal_mask.unsqueeze(0).unsqueeze(
-                1
-            )  # (1,1,kv_cache_len,kv_cache_len)
-            # shape: (bsz,1,kv_cache_len,kv_cache_len)
-            causal_mask = causal_mask.expand(batch_size, -1, -1, -1)
-            mask = (
-                (attention_mask == 0).unsqueeze(1).unsqueeze(1)
-            )  # (bsz,1,1,kv_cache_len)
-            causal_mask = causal_mask.masked_fill(mask, True)
-            # shape: (bsz,kv_heads,query_group_size,q_len,kv_cache_len)
-            attn_weights = attn_weights.masked_fill(
-                causal_mask.unsqueeze(2)[:, :, :, -q_len:, :], -float("inf")
-            )
-        else:
-            raise ValueError("attention_mask must be 2D")
-    else:
-        # shape: (q_len, q_len)
-        # no left padding, query can see all key before it
-        mask = torch.triu(
-            torch.ones(q_len, q_len, device=attn_weights.device), diagonal=1
-        ).bool()
-        attn_weights[:, :, :, :, -q_len:].masked_fill_(mask, -float("inf"))
-
-    attn_scores = torch.softmax(
-        attn_weights - attn_weights.max(dim=-1, keepdim=True).values, dim=-1
-    )
-    # apply pooling over attention head
-    if pooling == "mean":
-        attn_scores = attn_scores.mean(dim=2)
-    elif pooling == "max":
-        attn_scores = attn_scores.max(dim=2).values
-    else:
-        raise ValueError("Pooling method not supported")
-    return attn_scores[:, :, :, :-q_len]
-
-
-class ImformativeKV:
+class ScoreBasedKV:
     def __init__(
         self,
         budget=128,
@@ -92,10 +16,9 @@ class ImformativeKV:
         mix_lambda=0.1,
         retain_ratio=0.1,
         retain_direction="last",
-        record_kept_token_indices=False,
         enable_pooling=False,
         suppressing_redundancy=False,
-        smooth_method="mean",
+        smooth_method="max",
         enable_score_cache=False,
         disable_norm=False,
         alpha=0.8,
@@ -120,17 +43,6 @@ class ImformativeKV:
         self.compress_mode = compress_mode
         self.compress_ratio = compress_ratio
 
-        self.cached_score = None
-
-        # for recording kept token indices
-        self.record_kept_token_indices = record_kept_token_indices
-        if self.record_kept_token_indices:
-            self.evicted_token_num = 0
-            self.kept_token_indices = []
-            self.kept_attention_scores = []
-            self.kept_similarity_scores = []
-            self.kept_final_scores = []
-
     def update_kv(
         self,
         key_states: Optional[torch.Tensor] = None,
@@ -140,6 +52,7 @@ class ImformativeKV:
         cur_len: Optional[int] = None,
         attention_mask: Optional[torch.Tensor] = None,
         unfinished_sequences: Optional[torch.Tensor] = None,
+        score_cache: Optional[torch.Tensor] = None,
     ):
         """
         key_states: (bsz, num_kv_heads, kv_cache_len, head_dim)
@@ -165,7 +78,7 @@ class ImformativeKV:
             raise ValueError("compress mode must be budget or ratio")
 
         if kv_cache_len < budget:
-            return key_states, value_states, pos_ids_cache
+            return key_states, value_states, pos_ids_cache, score_cache
         else:
             # shape: (bsz, num_kv_heads, len, len)
             attn_scores = compute_attention_scores(
@@ -183,11 +96,11 @@ class ImformativeKV:
                     final_score.max(dim=-1, keepdim=True).values
                 )
 
-            if self.enable_score_cache and self.cached_score is not None and self.alpha>0:
+            if self.enable_score_cache and score_cache is not None and self.alpha > 0:
                 # cached score shape: (bsz, num_kv_heads, cached_score_len)
-                cached_score_len = self.cached_score.shape[-1]
+                cached_score_len = score_cache.shape[-1]
                 old_score = torch.cat(
-                    [self.cached_score, final_score[:, :, cached_score_len:]], dim=-1
+                    [score_cache, final_score[:, :, cached_score_len:]], dim=-1
                 )
                 if self.smooth_method == "mean":
                     final_score = old_score * self.alpha + final_score * (
@@ -212,7 +125,6 @@ class ImformativeKV:
                 similarity_cos = cal_similarity(
                     key_states,
                     retain_ratio=self.retain_ratio,
-                    retain_direction=self.retain_direction,
                 )[:, : -self.window_size]
 
                 if self.enable_score_cache and not self.disable_norm:
@@ -233,7 +145,7 @@ class ImformativeKV:
                 # this will make sure the padding tokens always be evicted first
                 mask = (attention_mask == 0)[:, : -self.window_size].unsqueeze(1)
                 min_values = pooled_score.min().item()
-                pooled_score.masked_fill_(mask, min_values-1e-6)
+                pooled_score.masked_fill_(mask, min_values - 1e-6)
 
             # shape: (bsz, num_kv_heads, budget - window_size)
             topk_indices = pooled_score.topk(budget - self.window_size, dim=-1).indices
@@ -243,7 +155,7 @@ class ImformativeKV:
 
             if self.enable_score_cache:
                 new_cached_score = final_score.gather(dim=2, index=indices)
-                if unfinished_sequences is not None and self.cached_score is not None:
+                if unfinished_sequences is not None and score_cache is not None:
                     # keep score of the last compressed tokens for analyze
                     bsz, num_heads, seq_len = new_cached_score.shape
                     mask = (
@@ -252,9 +164,9 @@ class ImformativeKV:
                         .expand(bsz, num_heads, seq_len)
                     )
                     new_cached_score = torch.where(
-                        mask, self.cached_score[:, :, :seq_len], new_cached_score
+                        mask, score_cache[:, :, :seq_len], new_cached_score
                     )
-                self.cached_score = new_cached_score
+                score_cache = new_cached_score
 
             if pos_ids_cache is not None:
                 cur_pos_ids_cache = pos_ids_cache[:, :, -self.window_size :]
@@ -289,4 +201,4 @@ class ImformativeKV:
             v_cur = value_states[:, :, -self.window_size :, :]
             key_states = torch.cat([k_past_compress, k_cur], dim=2)
             value_states = torch.cat([v_past_compress, v_cur], dim=2)
-            return key_states, value_states, pos_ids_cache
+            return key_states, value_states, pos_ids_cache, score_cache

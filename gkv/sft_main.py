@@ -5,33 +5,48 @@ import torch.distributed as dist
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from transformers import AutoTokenizer, AutoConfig
 from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
-from train.model.modeling_sparse_qwen2 import Qwen2SparseModelForCausalLM
+from .model.rl_modeling_qwen2 import Qwen2ForCausalLM
 from transformers import AutoModelForCausalLM
-from train.dataloader.dataloader import get_dataloader
+from .dataloader.sft_dataloader import get_dataloader
 from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 from accelerate import Accelerator
-from train.trainer.trainer import Trainer
+from .trainer.sft_trainer import Trainer
 from accelerate.utils import DummyOptim, DummyScheduler, set_seed
 from transformers import get_scheduler
 from torch.optim import AdamW
-
+from gkv.model.gen_patch import patch
 
 def main(args):
     set_seed(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     config = AutoConfig.from_pretrained(args.model_name)
-    config.compress_step = args.compress_step
-    config.window_size = args.window_size
-    config.kv_budget = args.kv_budget
-    config.alpha = args.alpha
-    config.mix_lambda = args.mix_lambda
-    config.sparse_mode = args.sparse_mode
-    config.sink_len = args.sink_len
-    config.sep_cache_len = args.sep_cache_len
+
+    compression_config = {
+        "method": args.method,
+        "method_config": {
+            # for evaluation and rebuild sparse mask
+            "enable_score_cache": True,
+            "suppressing_redundancy": True,
+            "budget": args.budget,
+            "window_size": args.window_size,
+            "sink_len": args.sink_len,
+            "mix_lambda": args.mix_lambda,
+            "alpha": args.alpha,
+        },
+        "record_pos_ids": False,
+        "return_sparse_mask": False,
+        "divide_length": args.divide_length,
+    }
+    config.update(compression_config)
 
     accelerator = Accelerator()
 
-    model = Qwen2SparseModelForCausalLM.from_pretrained(args.model_name, config=config)
+    model = Qwen2ForCausalLM.from_pretrained(
+        args.model_name,
+        config=config,
+        attn_implementation="flash_attention_2",
+    )
+    patch()
     model.model.gradient_checkpointing_enable()
     model.train()
     ref_model = None
@@ -59,10 +74,22 @@ def main(args):
     )
     # dataset
     dataloader = get_dataloader(args.dataset_path, tokenizer, args.max_output_len)
+    eval_dataloader = None
+    if args.eval_dataset_path is not None:
+        from gkv.dataloader.sft_dataloader import get_eval_dataloader
+
+        eval_dataloader = get_eval_dataloader(
+            args.eval_dataset_path,
+            tokenizer,
+            args.eval_split_len,
+            world_size,
+        )
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, dataloader, lr_scheduler
     )
+    if eval_dataloader is not None:
+        eval_dataloader = accelerator.prepare(eval_dataloader)
 
     if accelerator.deepspeed_plugin is not None and hasattr(
         accelerator.deepspeed_plugin, "gradient_accumulation_steps"
@@ -79,6 +106,7 @@ def main(args):
         optimizer=optimizer,
         scheduler=lr_scheduler,
         dataloader=dataloader,
+        eval_dataloader=eval_dataloader,
         accelerator=accelerator,
         ref_model=ref_model,
         args=args,
@@ -99,19 +127,18 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_path", type=str, required=True)
     parser.add_argument("--max_output_len", type=int, default=None)
     # sparse
-    parser.add_argument("--compress_step", type=int, default=128)
+    parser.add_argument("--divide_length", type=int, default=128)
     parser.add_argument("--window_size", type=int, default=16)
-    parser.add_argument("--kv_budget", type=int, default=512)
+    parser.add_argument("--budget", type=int, default=512)
     parser.add_argument("--alpha", type=float, default=0.8)
     parser.add_argument("--mix_lambda", type=float, default=0.5)
     parser.add_argument(
-        "--sparse_mode",
+        "--method",
         type=str,
-        choices=["sepllm", "stream", "dynamic"],
+        choices=["sepllm", "streamingllm", "score"],
         default="dynamic",
     )
     parser.add_argument("--sink_len", type=int, default=4)
-    parser.add_argument("--sep_cache_len", type=int, default=512)
     parser.add_argument(
         "--kept_sep",
         type=str,
@@ -125,6 +152,15 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-6)
     parser.add_argument("--use_kl_loss", action="store_true")
     parser.add_argument("--temperature", type=float, default=0.6)
+    # eval
+    parser.add_argument("--eval_dataset_path", type=str, default=None)
+    parser.add_argument("--eval_steps", type=int, default=10)
+    parser.add_argument("--eval_batch_size_per_gpu", type=int, default=128)
+    parser.add_argument("--eval_sample_n", type=int, default=4)
+    parser.add_argument("--eval_split_len", type=int, default=32)
+    parser.add_argument("--max_new_tokens", type=int, default=6144)
+    parser.add_argument("--top_p", type=float, default=0.95)
+    parser.add_argument("--eval_do_sample", action="store_true")
 
     # log
     parser.add_argument(
@@ -138,7 +174,10 @@ if __name__ == "__main__":
     # other
     parser.add_argument("--output_dir", type=str, default="./checkpoints")
     parser.add_argument("--exp_name", type=str, default="default")
-    parser.add_argument("--save_steps", type=int, default=250)
+    parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    if not args.eval_do_sample:
+        args.eval_sample_n = 1
     main(args)

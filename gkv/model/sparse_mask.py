@@ -1,6 +1,6 @@
 import torch
 from packaging.version import Version
-from typing import Optional
+from typing import Optional, List, Tuple
 from .utils import cal_similarity, compute_attention_scores
 
 if Version(torch.__version__) >= Version("2.5.0"):
@@ -8,6 +8,7 @@ if Version(torch.__version__) >= Version("2.5.0"):
         _DEFAULT_SPARSE_BLOCK_SIZE,
         create_block_mask,
     )
+from torch.nn.attention.flex_attention import BlockMask
 
 KV_BLOCK_SIZE = 128
 Q_BLOCK_SIZE = 128
@@ -121,26 +122,29 @@ def build_SepLLM_mask(
 def build_sparse_mask(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
-    attention_mask: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
     input_length: int,
-    compress_step: int,
+    divide_length: int,
     window_size: int,
-    kv_budget: int,
+    budget: int,
     alpha: float,
     mix_lambda: float,
 ) -> torch.Tensor:
     # shape (bsz,num_head,seq_len,head_dim)
+    bsz, seq_len = key_states.shape[0], key_states.shape[2]
+    if attention_mask is None:
+        attention_mask = torch.ones(bsz, seq_len, device=key_states.device).long()
+    assert len(attention_mask.shape) == 2, "attention_mask must be 2D"
     bsz, kv_head, seq_len, head_dim = key_states.shape
-    causal_mask = build_causal_mask(attention_mask)
-    causal_mask = causal_mask.unsqueeze(1).expand(-1, kv_head, -1, -1)
-
+    causal_mask = build_causal_mask(attention_mask).unsqueeze(1)
+    causal_mask = causal_mask.expand(-1, kv_head, -1, -1).clone()
     pos_cache = None
     score_cache: Optional[torch.Tensor] = None
     pre_window_end = 0
-    for pos in range(input_length, seq_len, compress_step):
-        if pos > kv_budget:
-            window_start = pos + compress_step - window_size
-            window_end = pos + compress_step
+    for pos in range(input_length, seq_len, divide_length):
+        if pos > budget:
+            window_start = pos - window_size
+            window_end = pos
             if window_end > seq_len:
                 break
             if pos_cache is None:
@@ -198,13 +202,8 @@ def build_sparse_mask(
             min_values = combined_score.min().item()
             combined_score.masked_fill_(mask, min_values - 1e-6)
             # get indices
-            keep_indices = combined_score.topk(kv_budget - window_size, dim=-1).indices
+            keep_indices = combined_score.topk(budget - window_size, dim=-1).indices
             keep_indices = torch.sort(keep_indices, dim=-1).values
-            num_drop = combined_score.shape[-1] - (kv_budget - window_size)
-            drop_indices = combined_score.topk(num_drop, dim=-1, largest=False).indices
-            drop_indices = torch.sort(drop_indices, dim=-1).values
-            # (bsz,kv_head,num_drop)
-            drop_pos = pos_cache.gather(dim=2, index=drop_indices)
 
             # update cache
             score_cache = final_score.gather(dim=2, index=keep_indices)
@@ -213,22 +212,118 @@ def build_sparse_mask(
             pos_cache = torch.cat([pos_cache, window_pos], dim=2)
 
             # update causal_mask
-            temp_mask = torch.ones_like(causal_mask, dtype=torch.bool)
+            next_window_end = min(window_end + divide_length, seq_len)
+            step_length = next_window_end - window_end
+            if not (step_length > 0):
+                break
+            sparse_mask = torch.zeros(
+                bsz,
+                kv_head,
+                step_length,
+                seq_len,
+                device=causal_mask.device,
+            ).bool()
+            sparse_mask[:, :, :, window_end:] = True
             # expand drop_pos to match temp_mask dimensions for masking columns (key positions)
             # drop_pos: (bsz, kv_head, num_drop) -> expand to (bsz, kv_head, seq_len, num_drop)
-            drop_pos_expanded = drop_pos.unsqueeze(2).expand(-1, -1, seq_len, -1)
-            temp_mask.scatter_(3, drop_pos_expanded, False)
-            temp_mask[:, :, :window_end, :] = True
-            causal_mask = temp_mask & causal_mask
+            pos_cache_expanded = pos_cache.unsqueeze(2).expand(-1, -1, step_length, -1)
+            sparse_mask.scatter_(3, pos_cache_expanded, True)
+            causal_mask[:, :, window_end:next_window_end, :] &= sparse_mask
             pre_window_end = window_end
         else:
             continue
     return causal_mask
 
 
-def build_block_mask(
-    attention_mask: torch.Tensor, num_query_heads: int
+def build_sparse_mask_from_pos_cache(
+    pos_cache_history: List[Tuple[torch.Tensor, int]],
+    attention_mask: torch.Tensor,
+    num_kv_heads: int,
 ) -> torch.Tensor:
+    """
+    Args:
+        pos_cache: List[Tuple[torch.Tensor, int]], the positions to keep
+        attention_mask: (bsz,seq_len), the attention mask
+    Return:
+        causal_mask: (bsz,kv_head,seq_len,seq_len), True means valid, False means masked
+    """
+    device = attention_mask.device
+
+    causal_mask = (
+        build_causal_mask(attention_mask).unsqueeze(1).expand(-1, num_kv_heads, -1, -1)
+    ).clone()
+    bsz, seq_len = attention_mask.shape
+    end_raw = attention_mask.shape[-1]
+    for i in range(len(pos_cache_history) - 1, -1, -1):
+        pos_cache, statrt_raw = pos_cache_history[i]
+        pos_cache = pos_cache.to(device)
+        if not (end_raw - statrt_raw > 0):
+            end_raw = statrt_raw
+            continue
+        sparse_mask = torch.zeros(
+            bsz, num_kv_heads, end_raw - statrt_raw, seq_len, device=device
+        ).bool()
+
+        col_indices = pos_cache.unsqueeze(2)  # [bsz, kv_head, 1, num_kept]
+        col_indices = col_indices.expand(-1, -1, end_raw - statrt_raw, -1)
+        sparse_mask.scatter_(3, col_indices, True)
+        sparse_mask[:, :, :, statrt_raw:] = True
+        # 创建一个临时变量来存储结果，避免内存冲突
+        sparse_mask &= causal_mask[:, :, statrt_raw:end_raw, :]
+        # 使用临时变量来更新 causal_mask
+        causal_mask[:, :, statrt_raw:end_raw, :] = sparse_mask
+        end_raw = statrt_raw
+    return causal_mask
+
+
+def expand_sparse_mask(
+    sparse_mask: torch.Tensor, expand_len: int, kept_pos: torch.Tensor
+) -> torch.Tensor:
+    """
+    args:
+        sparse_mask: (bsz,kv_head,seq_len,seq_len), True means valid, False means masked
+        expand_len: int, the length to expand
+        kept_pos: (bsz,kv_head,num_kept), the positions to keep
+    return:
+        expanded_sparse_mask: (bsz,kv_head,expand_len,expand_len), True means valid, False means masked
+    """
+    len_increase = expand_len - sparse_mask.shape[-1]
+    if len_increase > 0:
+        bsz, kv_head, seq_len, _ = sparse_mask.shape
+        expanded_mask = torch.zeros(
+            bsz, kv_head, expand_len, expand_len, device=sparse_mask.device
+        ).bool()
+        expanded_mask[:, :, :seq_len, :seq_len] = sparse_mask
+
+        new_rows_mask = torch.zeros(
+            bsz, kv_head, len_increase, expand_len, device=kept_pos.device
+        ).bool()
+
+        col_indices = kept_pos.unsqueeze(2)  # [bsz, kv_head, 1, num_kept]
+        col_indices = col_indices.expand(-1, -1, len_increase, -1)
+        new_rows_mask.scatter_(3, col_indices, True)
+        new_rows_mask[:, :, :, seq_len:] = True
+
+        # kept_pos may contain padding tokens
+        # so we mask the padding tokens according to the last row of the sparse mask
+        last_row_mask = sparse_mask[:, :, -1, :].to(kept_pos.device)
+        last_row_mask = last_row_mask.unsqueeze(2).expand(-1, -1, len_increase, -1)
+        new_rows_mask[:, :, :, :seq_len] = (
+            new_rows_mask[:, :, :, :seq_len] & last_row_mask
+        )
+
+        row_indices = torch.arange(seq_len, expand_len, device=kept_pos.device)
+        col_indices = torch.arange(expand_len, device=kept_pos.device)
+        causal_mask = col_indices.unsqueeze(0) <= row_indices.unsqueeze(1)
+        causal_mask = causal_mask.unsqueeze(0).unsqueeze(0).expand(bsz, kv_head, -1, -1)
+        new_rows_mask = new_rows_mask & causal_mask
+        expanded_mask[:, :, seq_len:, :] = new_rows_mask.to(expanded_mask.device)
+        return expanded_mask
+    else:
+        return sparse_mask
+
+
+def build_block_mask(attention_mask: torch.Tensor, num_query_heads: int) -> BlockMask:
     """
     build block mask from attention mask
     attention mask: bool (bsz,kv_head,seq_len,seq_len), True means valid, False means masked
@@ -255,14 +350,16 @@ def build_block_mask(
             return attention_mask[b, h, q_idx, kv_idx].view([]).detach().clone()
 
         B, H, Sq, Sk = attention_mask.shape
-    elif len(attention_mask.shape)==3:
+    elif len(attention_mask.shape) == 3:
         B, Sq, Sk = attention_mask.shape
         H = num_query_heads
+
         def sparse_kernel(b, h, q_idx, kv_idx):
             return attention_mask[b, q_idx, kv_idx].view([]).detach().clone()
+
     else:
         raise ValueError(f"Invalid attention mask shape: {attention_mask.shape}")
-        
+
     block_mask = create_block_mask(
         sparse_kernel,
         B,

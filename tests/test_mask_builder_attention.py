@@ -1,4 +1,4 @@
-from train.model.modeling_qwen2_mask_builder import Qwen2MaskBuilderAttention
+from train.model.modeling_sparse_qwen2 import Qwen2SparseAttention
 from argparse import Namespace
 import torch
 config={
@@ -19,7 +19,7 @@ config=Namespace(**config)
 
 
 
-atten=Qwen2MaskBuilderAttention(config,0)
+atten=Qwen2SparseAttention(config,0)
 
 bsz=2
 seqlen=1024
