@@ -107,6 +107,8 @@ class Trainer:
                         loss, token_mean_loss = self.kl_loss(
                             output.logits, ref_logits, labels
                         )
+                        del ref_logits
+                        del output
                         token_mean_loss /= self.gradient_accumulation_steps
                     else:
                         # allreduce input to main process
@@ -116,7 +118,9 @@ class Trainer:
                     loss = self.cross_entropy_loss(
                         output.logits, labels, self.model.module.config.vocab_size
                     )
+                    del output
                 torch.cuda.empty_cache()
+                torch.distributed.barrier()
                 loss = loss / self.gradient_accumulation_steps
                 self.accelerator.backward(loss)
                 if self.args.use_kl_loss:
@@ -135,7 +139,10 @@ class Trainer:
                         "train/lr": lr,
                         "train/loss": acc_loss,
                     }
-                    if update_step % self.args.eval_steps == 0 and self.eval_dataloader is not None:
+                    if (
+                        update_step % self.args.eval_steps == 0
+                        and self.eval_dataloader is not None
+                    ):
                         acc = self.evaluate()
                         status_dict["eval/acc"] = acc
                     # tensor /= torch.distributed.get_world_size()
@@ -143,7 +150,9 @@ class Trainer:
                     obj_list = [None for _ in range(world_size)]
                     torch.distributed.all_gather_object(obj_list, status_dict)
                     for key in status_dict.keys():
-                        status_dict[key] = sum([obj[key] for obj in obj_list]) / len(obj_list)
+                        status_dict[key] = sum([obj[key] for obj in obj_list]) / len(
+                            obj_list
+                        )
                     status_dict["train/epoch"] = step / step_per_epoch
                     if tqdm_bar is not None:
                         tqdm_bar.update(1)
@@ -152,7 +161,6 @@ class Trainer:
                     self.log_and_save(status_dict, update_step)
                     torch.distributed.barrier()
                     acc_loss = 0
-                
 
                 torch.cuda.empty_cache()
             if self.accelerator.is_main_process:
@@ -229,6 +237,7 @@ class Trainer:
             torch.distributed.barrier()
             return acc
 
+    @torch.no_grad()
     def generate(self, inputs, do_sample=True, temperature=None):
         unwrap_model = self.accelerator.unwrap_model(self.model)
         unwrap_model.eval()

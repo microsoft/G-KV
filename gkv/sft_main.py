@@ -16,6 +16,7 @@ from transformers import get_scheduler
 from torch.optim import AdamW
 from gkv.model.gen_patch import patch
 
+
 def main(args):
     set_seed(args.seed)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)

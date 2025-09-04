@@ -296,6 +296,9 @@ def _sample(
     # =============== build sparse mask from pos cache ===============
     if return_sparse_mask:
         bsz = input_ids.shape[0]
+
+        if torch.distributed.get_rank() == 3:
+            print("rank")
         attention_mask = model_kwargs["past_key_values"].attention_mask
         attention_mask = torch.cat(
             [
@@ -309,23 +312,21 @@ def _sample(
             ],
             dim=-1,
         )
-        sparse_mask_list = []
+        sparse_mask_list = [[] for _ in range(bsz)]
         for layer_idx in range(len(self.model.layers)):
-            # (bsz,1,kv_head,seq_len,seq_len)
-            layer_sparse_mask = (
-                build_sparse_mask_from_pos_cache(
-                    pos_cache_history[layer_idx],
-                    attention_mask,
-                    self.config.num_key_value_heads,
-                )
-                .unsqueeze(1)
-                .cpu()
-            )
-            sparse_mask_list.append(layer_sparse_mask)
-        # (bsz,layer,kv_head,seq_len,seq_len)
-        sparse_mask = torch.cat(sparse_mask_list, dim=1)
-
-        model_kwargs["past_key_values"].sparse_mask_cache = sparse_mask
+            # (bsz,kv_head,seq_len,seq_len)
+            layer_sparse_mask = build_sparse_mask_from_pos_cache(
+                pos_cache_history[layer_idx],
+                attention_mask,
+                self.config.num_key_value_heads,
+            ).cpu()
+            for i in range(bsz): # per layer sparse mask for each input
+                sparse_mask_list[i].append(layer_sparse_mask[i])
+            del layer_sparse_mask
+        for i in range(bsz):
+            # (layer,kv_head,seq_len,seq_len)
+            sparse_mask_list[i] = torch.stack(sparse_mask_list[i], dim=0)
+        model_kwargs["past_key_values"].sparse_mask_cache = sparse_mask_list
         model_kwargs["past_key_values"].attention_mask = attention_mask
 
     # =============== end build sparse mask from pos cache ===============

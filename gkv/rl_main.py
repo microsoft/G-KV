@@ -11,6 +11,7 @@ from .trainer.grpo_trainer import Trainer
 from .model.gen_patch import patch
 from .reward.math_reward_fn import compute_score
 
+
 def check_bsz(args, accelerator):
     args.gradient_accumulation_steps = (
         accelerator.deepspeed_plugin.gradient_accumulation_steps
@@ -20,9 +21,7 @@ def check_bsz(args, accelerator):
     )
     assert (
         args.train_batch_size_per_gpu * args.sample_n
-    ) == update_bsz_per_gpu, (
-        "only suport online RL, make sure train_batch_size_per_gpu*sample_n is equal to update_bsz_per_gpu"
-    )
+    ) == update_bsz_per_gpu, "only suport online RL, make sure train_batch_size_per_gpu*sample_n is equal to update_bsz_per_gpu"
 
 
 def main(args):
@@ -62,14 +61,21 @@ def main(args):
     else:
         world_size = 1
     train_dataloader, eval_dataloader = get_dataloader(
-        args.dataset_path, tokenizer, args.train_batch_size_per_gpu, args.eval_split_len, world_size
+        args.dataset_path,
+        tokenizer,
+        args.train_batch_size_per_gpu,
+        args.eval_split_len,
+        world_size,
     )
     # model
 
     if config.model_type == "qwen2":
         from .model.rl_modeling_qwen2 import Qwen2ForCausalLM
-
-        model = Qwen2ForCausalLM.from_pretrained(args.model_name, config=config)
+        model = Qwen2ForCausalLM.from_pretrained(
+            args.model_name,
+            config=config,
+            attn_implementation="flash_attention_2",
+        )
     else:
         raise ValueError(f"Unsupported model: {args.model_name}")
     model.model.gradient_checkpointing_enable()
@@ -82,8 +88,10 @@ def main(args):
         num_warmup_steps=num_warmup_steps,
         num_training_steps=args.max_train_steps * world_size,
     )
-    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = (
+        accelerator.prepare(
+            model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+        )
     )
     check_bsz(args, accelerator)
     reward_fn = compute_score
@@ -159,7 +167,7 @@ if __name__ == "__main__":
     parser.add_argument("--eval_batch_size_per_gpu", type=int, default=128)
     parser.add_argument("--eval_sample_n", type=int, default=4)
     parser.add_argument("--eval_temperature", type=float, default=0.6)
-    parser.add_argument("--eval_split_len", type=int, default=64)
+    parser.add_argument("--eval_split_len", type=int, default=32)
     # set in deepspeed config
     # parser.add_argument("--gradient_accumulation_steps", type=int, default=8)
     # parser.add_argument("--micro_batch_size_per_gpu", type=int, default=1)

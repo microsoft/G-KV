@@ -81,8 +81,11 @@ class Trainer:
             for batch in self.train_dataloader:
                 experiences = self.samples_generator.generate_samples(batch)
                 experiences = self.experience_maker.make_experience_batch(experiences)
+
+                torch.distributed.barrier()
                 torch.cuda.empty_cache()
                 status_dict = self.train_step(experiences)
+                
                 # evaluation
                 if (steps + 1) % self.args.eval_steps == 0:
                     eval_acc, eval_length = self.evaluate()
@@ -100,6 +103,7 @@ class Trainer:
                         status_dict["gen/" + key].extend(value)
                     rewards = exp.rewards.mean().item()
                     status_dict["train/rewards"].append(rewards)
+                del experiences
                 # reduce local
                 for key, value in status_dict.items():
                     if isinstance(value, float):
