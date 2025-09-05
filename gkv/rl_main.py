@@ -8,7 +8,7 @@ from transformers import AutoTokenizer, AutoConfig
 import torch.distributed as dist
 from .dataloader.rl_dataloader import get_dataloader
 from .trainer.grpo_trainer import Trainer
-from .model.gen_patch import patch
+from .model.gen_patch import patch_sample
 from .reward.math_reward_fn import compute_score
 
 
@@ -52,7 +52,7 @@ def main(args):
         "divide_length": args.divide_length,
     }
     config.update(compression_config)
-    patch()
+    patch_sample()
     #
     accelerator = Accelerator()
     # dataset
@@ -157,7 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("--trunk_length", type=int, default=6144)
     parser.add_argument("--max_train_steps", type=int, default=1000)
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
-    parser.add_argument("--lr_scheduler_type", type=str, default="linear")
+    parser.add_argument("--lr_scheduler_type", type=str, default="constant_with_warmup")
     parser.add_argument("--learning_rate", type=float, default=1e-6)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--offload_sparse_mask", action="store_true", default=False)
@@ -188,7 +188,7 @@ if __name__ == "__main__":
         default=["wandb", "tensorboard"],
     )
     parser.add_argument("--wandb_project", type=str, default="sparse_kv_rl")
-    parser.add_argument("--output_dir", type=str, default="output")
+    parser.add_argument("--output_dir", type=str, default="checkpoints")
     parser.add_argument("--exp_name", type=str, default="exp")
     parser.add_argument("--save_steps", type=int, default=100)
 

@@ -14,7 +14,7 @@ from .trainer.sft_trainer import Trainer
 from accelerate.utils import DummyOptim, DummyScheduler, set_seed
 from transformers import get_scheduler
 from torch.optim import AdamW
-from gkv.model.gen_patch import patch
+from gkv.model.gen_patch import patch_sample
 
 
 def main(args):
@@ -47,7 +47,7 @@ def main(args):
         config=config,
         attn_implementation="flash_attention_2",
     )
-    patch()
+    patch_sample()
     model.model.gradient_checkpointing_enable()
     model.train()
     ref_model = None

@@ -6,13 +6,17 @@ import numpy as np
 from tqdm import tqdm
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from .model import replace_llama, replace_qwen2
+from transformers import AutoTokenizer, AutoConfig
 from time import time
+from datasets import load_dataset
 
 SYSTEM_PROMPT = (
     "Please reason step by step, and put your final answer within \\boxed{}."
 )
+
+INPUT_KEY = {"math-ai/aime24": "problem", "zwhe99/amc23": "question"}
+TARGET_KEY = {"math-ai/aime24": "solution", "zwhe99/amc23": "answer"}
+SPLIT = {"math-ai/aime24": "test", "zwhe99/amc23": "test"}
 
 
 def set_seed(seed):
@@ -28,134 +32,234 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def load_dataset(dataset_path):
+def load_eval_dataset(dataset_name_or_path, tokenizer, input_key=None, target_key=None):
+
+    if dataset_name_or_path in INPUT_KEY:
+        input_key = INPUT_KEY[dataset_name_or_path]
+        target_key = TARGET_KEY[dataset_name_or_path]
+    else:
+        assert (
+            input_key is not None
+        ), "input_key is not provided for dataset: {dataset_name_or_path}"
+        assert (
+            target_key is not None
+        ), "target_key is not provided for dataset: {dataset_name_or_path}"
+
     prompts = []
     data = []
-    with open(dataset_path) as f:
-        for index, line in enumerate(f):
-            item = json.loads(line)
-            question = item["question"]
-            prompt = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-            ]
-            prompt = tokenizer.apply_chat_template(
-                prompt, tokenize=False, add_generation_prompt=True
+    dataset = load_dataset(dataset_name_or_path, split="test")
+    for index, item in enumerate(dataset):
+        question = item[input_key]
+        prompt = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ]
+        prompt = tokenizer.apply_chat_template(
+            prompt, tokenize=False, add_generation_prompt=True
+        )
+        for _ in range(args.n_sample):
+            prompts.append(prompt)
+            data.append(
+                {"question": question, "answer": item[target_key], "index": index}
             )
-            item["prompt"] = prompt
-            item["index"] = index
-            for _ in range(args.n_sample):
-                prompts.append(prompt)
-                data.append(item)
     return prompts, data
 
 
-def loop(args):
-    fout = open(args.save_path, "w")
+# def loop(args):
+#     fout = open(args.save_path, "w")
 
-    times = []
-    all_scores = []
-    pos_ids_cache = []
+#     times = []
+#     all_scores = []
+#     pos_ids_cache = []
 
-    for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
-        if i + args.eval_batch_size > len(prompts):
-            batch_prompts = prompts[i:]
-        else:
-            batch_prompts = prompts[i : i + args.eval_batch_size]
-        tokenized_prompts = tokenizer(
-            batch_prompts,
-            padding="longest",
-            return_tensors="pt",
-            add_special_tokens=False,
-        ).to("cuda")
+#     for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
 
-        prefill_lengths = tokenized_prompts["attention_mask"].sum(dim=1).tolist()
-        start_time = time()
-        with torch.no_grad():
-            if args.attn_implementation == "flash_attention_2":
-                output = model.generate(
-                    **tokenized_prompts,
-                    **sample_args,
-                )
-            else:
-                # mixed precision acceleration
-                with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-                    output = model.generate(
-                        **tokenized_prompts,
-                        **sample_args,
-                    )
-        end_time = time()
-        times.append(end_time - start_time)
 
-        if args.method == "score":
-            # clear the score cache
-            scores = model.clear_score_cache()
-            if args.record_scores:
-                all_scores.append(scores)
+# for j in range(len(batch_outputs)):
+#     sample_idx = batch_token_stats[j]["sample_idx"]
+#     data[sample_idx]["prompt"] = batch_prompts[j]
+#     data[sample_idx]["output"] = batch_outputs[j]
+#     data[sample_idx]["prefill_tokens"] = batch_token_stats[j]["prefill_tokens"]
+#     data[sample_idx]["output_tokens"] = batch_token_stats[j]["output_tokens"]
+#     data[sample_idx]["total_tokens"] = batch_token_stats[j]["total_tokens"]
+#     data[sample_idx]["sample_idx"] = batch_token_stats[j]["sample_idx"]
 
-        if hasattr(model, "pos_ids_cache"):
-            pos_ids_cache.append(model.pos_ids_cache)
-            model.pos_ids_cache = None
+#         fout.write(json.dumps(data[sample_idx], ensure_ascii=False) + "\n")
 
-        batch_token_stats = []
-        for j in range(output.size(0)):
-            total_tokens = int((output[j] != tokenizer.pad_token_id).sum().item())
+# fout.close()
+# np.save(
+#     args.save_path.replace(".jsonl", "_info.npy"),
+#     np.array(
+#         {"times": times, "scores": all_scores, "pos_ids": pos_ids_cache},
+#         dtype=object,
+#     ),
+# )
 
-            prefill = prefill_lengths[j]
-            output_tokens = total_tokens - prefill
 
-            batch_token_stats.append(
-                {
-                    "sample_idx": i + j,
-                    "prefill_tokens": prefill,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                }
+def process_output(output, input_len, tokenizer):
+    output_dis = output.sequences[:, input_len:]
+    num_pad = (output_dis == tokenizer.pad_token_id).sum(dim=1)
+    if tokenizer.pad_token_id == tokenizer.eos_token_id:
+        num_pad = torch.clamp(num_pad - 1, min=0)
+
+    output_tokens = (output_dis.shape[1] - num_pad).tolist()
+
+    batch_outputs = tokenizer.batch_decode(
+        output_dis,
+        skip_special_tokens=True,
+    )
+
+    pos_ids = None
+    if hasattr(output.past_key_values, "pos_ids_cache"):
+        pos_ids_list = []
+        for layer_idx in sorted(output.past_key_values.pos_ids_cache.keys()):
+            pos_ids_list.append(
+                output.past_key_values.pos_ids_cache[layer_idx].unsqueeze(1)
             )
+        # (bsz, layer, num_kv_heads, seq_len)
+        pos_ids = torch.cat(pos_ids_list, dim=1).cpu().numpy()
+    return batch_outputs, output_tokens, pos_ids
 
-        batch_outputs = tokenizer.batch_decode(
-            [output[j][prefill_lengths[j] :] for j in range(output.size(0))],
-            skip_special_tokens=True,
-        )
 
-        torch.cuda.empty_cache()
+@torch.no_grad()
+def generate(model, tokenizer, batch_prompts, sample_args):
 
-        for j in range(len(batch_outputs)):
-            sample_idx = batch_token_stats[j]["sample_idx"]
-            data[sample_idx]["prompt"] = batch_prompts[j]
-            data[sample_idx]["output"] = batch_outputs[j]
-            data[sample_idx]["prefill_tokens"] = batch_token_stats[j]["prefill_tokens"]
-            data[sample_idx]["output_tokens"] = batch_token_stats[j]["output_tokens"]
-            data[sample_idx]["total_tokens"] = batch_token_stats[j]["total_tokens"]
-            data[sample_idx]["sample_idx"] = batch_token_stats[j]["sample_idx"]
+    inputs = tokenizer(
+        batch_prompts,
+        padding="longest",
+        return_tensors="pt",
+        add_special_tokens=False,
+    ).to("cuda")
 
-            fout.write(json.dumps(data[sample_idx], ensure_ascii=False) + "\n")
+    prefill_lengths = inputs["attention_mask"].sum(dim=1).tolist()
 
-    fout.close()
-    np.save(
-        args.save_path.replace(".jsonl", "_info.npy"),
-        np.array(
-            {"times": times, "scores": all_scores, "pos_ids": pos_ids_cache},
-            dtype=object,
-        ),
+    start_time = time()
+    output = model.generate(
+        **inputs,
+        **sample_args,
+        return_dict_in_generate=True,
+    )
+    end_time = time()
+
+    batch_outputs_text, output_tokens, pos_ids = process_output(
+        output, inputs["input_ids"].shape[1], tokenizer
+    )
+    torch.cuda.empty_cache()
+    return (
+        prefill_lengths,
+        output_tokens,
+        batch_outputs_text,
+        end_time - start_time,
+        pos_ids,
     )
 
 
-def parse_arguments():
+def main(args):
+    set_seed(args.seed)
+
+    # ====== build compression config ======
+    config = AutoConfig.from_pretrained(args.model_path)
+    compression_config = {
+        "method": args.method,
+        "method_config": {
+            "budget": args.budget,
+            "window_size": args.window_size,
+            "compress_mode": args.compress_mode,
+            "compress_ratio": args.compress_ratio,
+            "sink_len": args.sink_len,
+            "enable_pooling": args.enable_pooling,
+            "suppressing_redundancy": args.suppressing_redundancy,
+            "mix_lambda": args.mix_lambda,
+            "retain_ratio": args.retain_ratio,
+            "retain_direction": args.retain_direction,
+            "enable_score_cache": args.enable_score_cache,
+            "smooth_method": args.smooth_method,
+            "alpha": args.alpha,
+            "disable_norm": args.disable_norm,
+        },
+        "record_pos_ids": args.record_pos_ids,
+        "return_sparse_mask": False,
+        "divide_length": args.divide_length,
+    }
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_path, use_fast=True, padding_side="left"
+    )
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+
+    if args.method.lower() == "fullkv":
+        from transformers import AutoModelForCausalLM
+    else:
+        from gkv.model import AutoModelForCausalLM
+        from gkv.model.gen_patch import patch_sample
+
+        config.update(compression_config)
+        patch_sample()
+
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_path,
+        config=config,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
+    ).cuda()
+
+    model.eval()
+
+    prompts, data = load_eval_dataset(
+        args.dataset_path,
+        tokenizer,
+        input_key=args.input_key,
+        target_key=args.target_key,
+    )
+    # sampling config
+    if args.do_sample:
+        sample_args = {
+            "do_sample": True,
+            "max_new_tokens": args.max_new_tokens,
+            "top_p": args.top_p,
+            "temperature": args.temperature,
+            "use_cache": True,
+            "eos_token_id": tokenizer.eos_token_id,
+            "pad_token_id": tokenizer.pad_token_id,
+        }
+    else:
+        sample_args = {
+            "do_sample": False,
+            "max_new_tokens": args.max_new_tokens,
+            "top_p": None,
+            "use_cache": True,
+            "eos_token_id": tokenizer.eos_token_id,
+            "pad_token_id": tokenizer.pad_token_id,
+        }
+
+    times = []
+    for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
+        batch_prompts = prompts[i : i + args.eval_batch_size]
+        prefill_lengths, output_tokens, output_text, time_per_batch, pos_ids = generate(
+            model, tokenizer, batch_prompts, sample_args
+        )
+        all_tokens=sum(output_tokens)
+        times.append(time_per_batch)
+        tqdm.write(f"throughput: {all_tokens / time_per_batch:.2f} tokens/s")
+
+
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--seed", type=int, default=42)
+
     parser.add_argument("--dataset_path", type=str)
+    parser.add_argument("--input_key", type=str, default=None)
+    parser.add_argument("--target_key", type=str, default=None)
+
     parser.add_argument("--save_path", type=str)
     parser.add_argument("--model_path", type=str)
-    parser.add_argument("--max_length", type=int, default=-1)
+    parser.add_argument("--max_new_tokens", type=int, default=8192)
     parser.add_argument("--eval_batch_size", type=int, default=1)
-    parser.add_argument(
-        "--attn_implementation",
-        type=str,
-        default="flash_attention_2",
-        choices=["flash_attention_2", "sdpa", "eager"],
-    )
+
     # sampling config
     parser.add_argument("--n_sample", type=int, default=1)
     parser.add_argument("--do_sample", action="store_true", default=False)
@@ -166,11 +270,11 @@ def parse_arguments():
     parser.add_argument(
         "--method",
         type=str,
-        default=None,
+        default="score",
         choices=["score", "sepllm", "streamingllm", "fullkv"],
     )
     # basic
-    parser.add_argument("--kv_budget", type=int, default=128)
+    parser.add_argument("--budget", type=int, default=128)
     parser.add_argument("--window_size", type=int, default=64)
     parser.add_argument(
         "--compress_mode", type=str, default="budget", choices=["budget", "ratio"]
@@ -205,88 +309,6 @@ def parse_arguments():
 
     # Info
     parser.add_argument("--record_pos_ids", action="store_true", default=False)
-    parser.add_argument("--record_scores", action="store_true", default=False)
+    args = parser.parse_args()
 
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = parse_arguments()
-    set_seed(args.seed)
-
-    # ====== build compression config ======
-    compression_config = {
-        "method": args.method,
-        "method_config": {
-            "budget": args.kv_budget,
-            "window_size": args.window_size,
-            "compress_mode": args.compress_mode,
-            "compress_ratio": args.compress_ratio,
-            "sink_len": args.sink_len,
-            "enable_pooling": args.enable_pooling,
-            "suppressing_redundancy": args.suppressing_redundancy,
-            "mix_lambda": args.mix_lambda,
-            "retain_ratio": args.retain_ratio,
-            "retain_direction": args.retain_direction,
-            "enable_score_cache": args.enable_score_cache,
-            "smooth_method": args.smooth_method,
-            "alpha": args.alpha,
-            "disable_norm": args.disable_norm,
-        },
-        "record_pos_ids": args.record_pos_ids,
-    }
-    model_config = {
-        "divide_length": args.divide_length,
-    }
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_path, use_fast=True, padding_side="left"
-    )
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    # apply monkey patch
-    if args.method.lower() != "fullkv":
-        if "llama" in args.model_path.lower():
-            replace_llama(compression_config)
-        elif "qwen" in args.model_path.lower():
-            replace_qwen2(compression_config)
-        else:
-            raise ValueError(f"Unsupported model: {args.model_path}")
-
-    if args.attn_implementation == "flash_attention_2":
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_path,
-            torch_dtype=torch.bfloat16,
-            use_cache=True,
-            attn_implementation=args.attn_implementation,
-        ).cuda()
-    else:
-        # bf16 is numerically unstable, bf16 need to use with flash attention 2
-        model = AutoModelForCausalLM.from_pretrained(
-            args.model_path,
-            use_cache=True,
-            attn_implementation=args.attn_implementation,
-        ).cuda()
-
-    model.eval()
-
-    model.config.update(model_config)
-
-    # sampling config
-    if args.do_sample:
-        sample_args = {
-            "do_sample": True,
-            "max_length": args.max_length,
-            "top_p": args.top_p,
-            "temperature": args.temperature,
-        }
-    else:
-        sample_args = {
-            "do_sample": False,
-            "max_length": args.max_length,
-        }
-
-    prompts, data = load_dataset(args.dataset_path)
-    loop(args)
+    main(args)

@@ -369,5 +369,5 @@ def _sample(
         return input_ids
 
 
-def patch():
+def patch_sample():
     GenerationMixin._sample = _sample

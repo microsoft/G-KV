@@ -85,7 +85,7 @@ class Trainer:
                 torch.distributed.barrier()
                 torch.cuda.empty_cache()
                 status_dict = self.train_step(experiences)
-                
+
                 # evaluation
                 if (steps + 1) % self.args.eval_steps == 0:
                     eval_acc, eval_length = self.evaluate()
@@ -256,7 +256,7 @@ class Trainer:
             return acc, avg_length
 
     def save_checkpoint(self, step):
-        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        unwrapped_model = self.accelerator.unwrap_model(self.actor.model)
         save_path = os.path.join(
             self.args.output_dir, f"{self.args.exp_name}/checkpoint-{step}"
         )

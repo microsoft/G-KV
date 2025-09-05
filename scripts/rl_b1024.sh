@@ -6,10 +6,10 @@ DATASET_PATH="agentica-org/DeepScaleR-Preview-Dataset"
 
 # train parameters
 LEARNING_RATE=1e-6
-EXP_NAME="qwen7b_rl_b512"
+EXP_NAME="qwen7b_rl_b1024"
 MAX_TRAIN_STEPS=400
 TRAIN_BATCH_SIZE_PER_GPU=2
-BUDGET=512
+BUDGET=1024
 TRAIN_MICRO_BATCH_SIZE_PER_GPU=1
 
 accelerate launch \
