@@ -1,17 +1,10 @@
-import random
-import numpy as np
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from transformers import AutoTokenizer, AutoConfig
-from transformers.models.qwen2.modeling_qwen2 import Qwen2DecoderLayer
-from .model.rl_modeling_qwen2 import Qwen2ForCausalLM
-from transformers import AutoModelForCausalLM
 from .dataloader.sft_dataloader import get_dataloader
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 from accelerate import Accelerator
 from .trainer.sft_trainer import Trainer
-from accelerate.utils import DummyOptim, DummyScheduler, set_seed
+from accelerate.utils import set_seed
 from transformers import get_scheduler
 from torch.optim import AdamW
 from gkv.model.gen_patch import patch_sample
@@ -42,17 +35,21 @@ def main(args):
 
     accelerator = Accelerator()
 
-    model = Qwen2ForCausalLM.from_pretrained(
+    from gkv.model import AutoModelForCausalLM
+    model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
         config=config,
         attn_implementation="flash_attention_2",
     )
+    
     patch_sample()
     model.model.gradient_checkpointing_enable()
     model.train()
     ref_model = None
 
     if args.use_kl_loss:
+        from transformers import AutoModelForCausalLM
+
         ref_model = AutoModelForCausalLM.from_pretrained(
             args.model_name,
             torch_dtype=torch.bfloat16,

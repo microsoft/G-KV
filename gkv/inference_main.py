@@ -14,9 +14,21 @@ SYSTEM_PROMPT = (
     "Please reason step by step, and put your final answer within \\boxed{}."
 )
 
-INPUT_KEY = {"math-ai/aime24": "problem", "zwhe99/amc23": "question"}
-TARGET_KEY = {"math-ai/aime24": "solution", "zwhe99/amc23": "answer"}
-SPLIT = {"math-ai/aime24": "test", "zwhe99/amc23": "test"}
+INPUT_KEY = {
+    "math-ai/aime24": "problem",
+    "zwhe99/amc23": "question",
+    "agentica-org/DeepScaleR-Preview-Dataset": "problem",
+}
+TARGET_KEY = {
+    "math-ai/aime24": "solution",
+    "zwhe99/amc23": "answer",
+    "agentica-org/DeepScaleR-Preview-Dataset": "answer",
+}
+SPLIT = {
+    "math-ai/aime24": "test",
+    "zwhe99/amc23": "test",
+    "agentica-org/DeepScaleR-Preview-Dataset": "train",
+}
 
 
 def set_seed(seed):
@@ -32,11 +44,14 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-def load_eval_dataset(dataset_name_or_path, tokenizer, input_key=None, target_key=None):
-
+def load_eval_dataset(
+    dataset_name_or_path, tokenizer, input_key=None, target_key=None, split_len=None
+):
+    split = "test"
     if dataset_name_or_path in INPUT_KEY:
         input_key = INPUT_KEY[dataset_name_or_path]
         target_key = TARGET_KEY[dataset_name_or_path]
+        split = SPLIT[dataset_name_or_path]
     else:
         assert (
             input_key is not None
@@ -47,7 +62,11 @@ def load_eval_dataset(dataset_name_or_path, tokenizer, input_key=None, target_ke
 
     prompts = []
     data = []
-    dataset = load_dataset(dataset_name_or_path, split="test")
+    dataset = load_dataset(dataset_name_or_path, split=split)
+
+    if split_len is not None:
+        dataset = dataset.select(range(0, split_len))
+
     for index, item in enumerate(dataset):
         question = item[input_key]
         prompt = [
@@ -59,41 +78,12 @@ def load_eval_dataset(dataset_name_or_path, tokenizer, input_key=None, target_ke
         )
         for _ in range(args.n_sample):
             prompts.append(prompt)
+            if not isinstance(item[target_key], str):
+                item[target_key] = str(item[target_key])
             data.append(
                 {"question": question, "answer": item[target_key], "index": index}
             )
     return prompts, data
-
-
-# def loop(args):
-#     fout = open(args.save_path, "w")
-
-#     times = []
-#     all_scores = []
-#     pos_ids_cache = []
-
-#     for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
-
-
-# for j in range(len(batch_outputs)):
-#     sample_idx = batch_token_stats[j]["sample_idx"]
-#     data[sample_idx]["prompt"] = batch_prompts[j]
-#     data[sample_idx]["output"] = batch_outputs[j]
-#     data[sample_idx]["prefill_tokens"] = batch_token_stats[j]["prefill_tokens"]
-#     data[sample_idx]["output_tokens"] = batch_token_stats[j]["output_tokens"]
-#     data[sample_idx]["total_tokens"] = batch_token_stats[j]["total_tokens"]
-#     data[sample_idx]["sample_idx"] = batch_token_stats[j]["sample_idx"]
-
-#         fout.write(json.dumps(data[sample_idx], ensure_ascii=False) + "\n")
-
-# fout.close()
-# np.save(
-#     args.save_path.replace(".jsonl", "_info.npy"),
-#     np.array(
-#         {"times": times, "scores": all_scores, "pos_ids": pos_ids_cache},
-#         dtype=object,
-#     ),
-# )
 
 
 def process_output(output, input_len, tokenizer):
@@ -131,7 +121,7 @@ def generate(model, tokenizer, batch_prompts, sample_args):
         add_special_tokens=False,
     ).to("cuda")
 
-    prefill_lengths = inputs["attention_mask"].sum(dim=1).tolist()
+    prefill_tokens = inputs["attention_mask"].sum(dim=1).tolist()
 
     start_time = time()
     output = model.generate(
@@ -146,7 +136,7 @@ def generate(model, tokenizer, batch_prompts, sample_args):
     )
     torch.cuda.empty_cache()
     return (
-        prefill_lengths,
+        prefill_tokens,
         output_tokens,
         batch_outputs_text,
         end_time - start_time,
@@ -213,6 +203,7 @@ def main(args):
         tokenizer,
         input_key=args.input_key,
         target_key=args.target_key,
+        split_len=args.split_len,
     )
     # sampling config
     if args.do_sample:
@@ -235,25 +226,48 @@ def main(args):
             "pad_token_id": tokenizer.pad_token_id,
         }
 
-    times = []
-    for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
-        batch_prompts = prompts[i : i + args.eval_batch_size]
-        prefill_lengths, output_tokens, output_text, time_per_batch, pos_ids = generate(
-            model, tokenizer, batch_prompts, sample_args
-        )
-        all_tokens=sum(output_tokens)
-        times.append(time_per_batch)
-        tqdm.write(f"throughput: {all_tokens / time_per_batch:.2f} tokens/s")
+    info = {
+        "time_per_batch": [],
+        "tokens_per_batch": [],
+        "pos_ids": [],
+    }
+    with open(args.save_path, "w") as f:
+        for i in tqdm(range(0, len(prompts), args.eval_batch_size)):
+            batch_prompts = prompts[i : i + args.eval_batch_size]
+            prefill_tokens, output_tokens, output_text, time_per_batch, pos_ids = (
+                generate(model, tokenizer, batch_prompts, sample_args)
+            )
+            all_tokens = sum(output_tokens)
+
+            info["time_per_batch"].append(time_per_batch)
+            info["pos_ids"].append(pos_ids)
+            info["tokens_per_batch"].append(all_tokens)
+
+            tqdm.write(f"throughput: {all_tokens / time_per_batch:.2f} tokens/s")
+            for j in range(len(output_text)):
+                data[i + j]["output_text"] = output_text[j]
+                data[i + j]["prefill_tokens"] = prefill_tokens[j]
+                data[i + j]["output_tokens"] = output_tokens[j]
+                f.write(json.dumps(data[i + j], ensure_ascii=False) + "\n")
+
+    print(f"total tokens: {sum(info['tokens_per_batch'])}")
+    print(f"total time: {sum(info['time_per_batch'])}")
+    print(
+        f"average throughput: {sum(info['tokens_per_batch']) / sum(info['time_per_batch']):.2f} tokens/s"
+    )
+
+    np.save(args.save_path.replace(".jsonl", "_info.npy"), np.array(info, dtype=object))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--seed", type=int, default=42)
-
+    # dataset
     parser.add_argument("--dataset_path", type=str)
     parser.add_argument("--input_key", type=str, default=None)
     parser.add_argument("--target_key", type=str, default=None)
+    parser.add_argument("--split_len", type=int, default=None)
 
     parser.add_argument("--save_path", type=str)
     parser.add_argument("--model_path", type=str)

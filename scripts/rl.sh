@@ -35,4 +35,5 @@ accelerate launch \
     --exp_name $EXP_NAME \
     --max_train_steps $MAX_TRAIN_STEPS \
     --eval_do_sample \
+    --save_steps 50
 

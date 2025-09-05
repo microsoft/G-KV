@@ -1,8 +1,6 @@
-import torch
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import SequentialLR, LinearLR, CosineAnnealingLR
 from accelerate import Accelerator
-from accelerate.utils import DummyOptim, DummyScheduler, set_seed
+from accelerate.utils import set_seed
 from transformers import get_scheduler
 from transformers import AutoTokenizer, AutoConfig
 import torch.distributed as dist
@@ -10,6 +8,7 @@ from .dataloader.rl_dataloader import get_dataloader
 from .trainer.grpo_trainer import Trainer
 from .model.gen_patch import patch_sample
 from .reward.math_reward_fn import compute_score
+from .model import AutoModelForCausalLM
 
 
 def check_bsz(args, accelerator):
@@ -69,15 +68,11 @@ def main(args):
     )
     # model
 
-    if config.model_type == "qwen2":
-        from .model.rl_modeling_qwen2 import Qwen2ForCausalLM
-        model = Qwen2ForCausalLM.from_pretrained(
-            args.model_name,
-            config=config,
-            attn_implementation="flash_attention_2",
-        )
-    else:
-        raise ValueError(f"Unsupported model: {args.model_name}")
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name,
+        config=config,
+        attn_implementation="flash_attention_2",
+    )
     model.model.gradient_checkpointing_enable()
 
     optimizer = AdamW(model.parameters(), lr=args.learning_rate)
