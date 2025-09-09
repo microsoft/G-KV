@@ -1,10 +1,11 @@
 import sys
 import os
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from train.model.sparse_mask import build_SepLLM_mask
+from gkv.model.sparse_mask import build_SepLLM_mask
 import torch
 
-sep_len=4096
+sep_len = 4096
 input_ids = torch.randint(0, 100, (2, sep_len))
 attention_mask = torch.Tensor([[0] * 100 + [1] * (sep_len - 100), [1] * sep_len]).long()
 keep_dis = torch.Tensor([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).long()
