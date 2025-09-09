@@ -137,6 +137,8 @@ class Trainer:
                     tqdm_bar.set_postfix(**simple_status_dict)
 
                 self.log_and_save(status_dict, steps)
+                if steps >= self.max_train_steps:
+                    break
 
     def train_step(self, batched_experiences: List[Experience]):
         self.actor.model.train()

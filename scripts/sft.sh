@@ -8,16 +8,16 @@ EVAL_DATASET_PATH="agentica-org/DeepScaleR-Preview-Dataset"
 # Sparse parameters
 DIVIDE_LENGTH=128
 WINDOW_SIZE=16
-BUDGET=1024
+BUDGET=2048
 ALPHA=0.8
 MIX_LAMBDA=0.5
 
 # train parameters
-LEARNING_RATE=1e-6
-EXP_NAME="qwen7b_sft_kl"
-MAX_TRAIN_STEPS=500
+LEARNING_RATE=5e-7
+EXP_NAME="qwen7b_sft_kl_2048"
+MAX_TRAIN_STEPS=250
 EVAL_STEPS=20
-MAX_OUTPUT_LEN=4096
+MAX_OUTPUT_LEN=4500
 
 accelerate launch \
     --num_processes 8 \

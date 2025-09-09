@@ -6,6 +6,7 @@ from dataclasses import fields
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
+
 # from gkv.model.utils import zero_pad_sequences
 from gkv.trainer.grpo_utils.actor import Actor
 
@@ -212,8 +213,8 @@ def process_sample(
         sequences = sequences[num_left_pad:-num_right_pad].unsqueeze(0).cpu()
     else:
         sequences = sequences[num_left_pad:].unsqueeze(0).cpu()
-    
-    seq_len=sequences.shape[1]
+
+    seq_len = sequences.shape[1]
     if trunk_length is not None:
         trunked_seq_len = min(seq_len, trunk_length)
         sequences = sequences[:, :trunked_seq_len]
@@ -223,7 +224,7 @@ def process_sample(
     trunked_output_len = trunked_seq_len - (input_len - num_left_pad)
 
     info = {
-        "output_len": [output_len], # log the original output length
+        "output_len": [output_len],  # log the original output length
         "input_len": [input_len - num_left_pad],
         "output_texts": [output_texts],
         "sequence_length": [seq_len],
@@ -288,7 +289,9 @@ class SamplesGenerator:
             batch_prompts, return_tensors="pt", add_special_tokens=False, padding=True
         ).to(self.accelerator.device)
         input_len = inputs.input_ids.shape[1]
-        batch_ids, sparse_mask, attention_mask = self.actor.generate(inputs,output_sparse_mask=True)
+        batch_ids, sparse_mask, attention_mask = self.actor.generate(
+            inputs, output_sparse_mask=True
+        )
         output_dis = batch_ids[:, input_len:]
         output_texts = self.tokenizer.batch_decode(output_dis, skip_special_tokens=True)
         exp_list = []
@@ -317,6 +320,8 @@ class ExperienceMaker:
         self.args = args
         self.train_micro_batch_size_per_gpu = args.train_micro_batch_size_per_gpu
         self.sample_n = args.sample_n
+        self.clip = args.clip_overlength_advantage
+        self.max_new_tokens = args.max_new_tokens
 
     def compute_advantages(self, experiences):
         """
@@ -331,6 +336,18 @@ class ExperienceMaker:
             group_advantages = group_advantages / (group_advantages.std() + 1e-8)
             for j in range(i, i + self.sample_n):
                 sequence_len = experiences[j].action_mask.shape[1]
+                if (
+                    self.clip
+                    and experiences[j].info["output_len"][0] == self.max_new_tokens
+                ):
+                    # clip the advantage of over length sequence to 0
+                    group_advantages[j - i] = torch.clamp(
+                        group_advantages[j - i], min=0
+                    )
+                    experiences[j].info["clip"] = [1]
+                else:
+                    experiences[j].info["clip"] = [0]
+                    
                 experiences[j].advantages = (
                     group_advantages[j - i].unsqueeze(0).expand(1, sequence_len)
                 )

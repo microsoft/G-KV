@@ -147,7 +147,6 @@ def generate(model, tokenizer, batch_prompts, sample_args):
 def main(args):
     set_seed(args.seed)
 
-    # ====== build compression config ======
     config = AutoConfig.from_pretrained(args.model_path)
     compression_config = {
         "method": args.method,
@@ -250,6 +249,7 @@ def main(args):
                 data[i + j]["output_tokens"] = output_tokens[j]
                 f.write(json.dumps(data[i + j], ensure_ascii=False) + "\n")
 
+    print(args.save_path)
     print(f"total tokens: {sum(info['tokens_per_batch'])}")
     print(f"total time: {sum(info['time_per_batch'])}")
     print(

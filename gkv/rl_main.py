@@ -156,6 +156,7 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-6)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--offload_sparse_mask", action="store_true", default=False)
+    parser.add_argument("--clip_overlength_advantage", action="store_true", default=False)    
     # eval
     parser.add_argument("--eval_do_sample", action="store_true", default=False)
     parser.add_argument("--eval_steps", type=int, default=10)
