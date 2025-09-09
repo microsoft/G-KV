@@ -8,7 +8,6 @@ from .dataloader.rl_dataloader import get_dataloader
 from .trainer.grpo_trainer import Trainer
 from .model.gen_patch import patch_sample
 from .reward.math_reward_fn import compute_score
-from .model import AutoModelForCausalLM
 
 
 def check_bsz(args, accelerator):
@@ -50,8 +49,13 @@ def main(args):
         "return_sparse_mask": True,
         "divide_length": args.divide_length,
     }
-    config.update(compression_config)
-    patch_sample()
+    if not args.method == "fullkv":
+        from .model import AutoModelForCausalLM
+
+        config.update(compression_config)
+        patch_sample()
+    else:
+        from transformers import AutoModelForCausalLM
     #
     accelerator = Accelerator()
     # dataset
@@ -156,7 +160,9 @@ if __name__ == "__main__":
     parser.add_argument("--learning_rate", type=float, default=1e-6)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--offload_sparse_mask", action="store_true", default=False)
-    parser.add_argument("--clip_overlength_advantage", action="store_true", default=False)    
+    parser.add_argument(
+        "--clip_overlength_advantage", action="store_true", default=False
+    )
     # eval
     parser.add_argument("--eval_do_sample", action="store_true", default=False)
     parser.add_argument("--eval_steps", type=int, default=10)

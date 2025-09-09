@@ -231,16 +231,18 @@ def process_sample(
     }
     # build mask
     attention_mask = torch.tensor([1] * (trunked_seq_len)).unsqueeze(0)
-    sparse_mask = (
-        sparse_mask[
-            :,
-            :,
-            num_left_pad : input_len + trunked_output_len,
-            num_left_pad : input_len + trunked_output_len,
-        ]
-        .unsqueeze(0)
-        .cpu()
-    )
+    if sparse_mask is not None:
+        sparse_mask = (
+            sparse_mask[
+                :,
+                :,
+                num_left_pad : input_len + trunked_output_len,
+                num_left_pad : input_len + trunked_output_len,
+            ]
+            .unsqueeze(0)
+            .cpu()
+        )
+        
     action_mask = torch.BoolTensor(
         [False] * info["input_len"][0] + [True] * trunked_output_len
     ).unsqueeze(0)
@@ -288,8 +290,9 @@ class SamplesGenerator:
         inputs = self.tokenizer(
             batch_prompts, return_tensors="pt", add_special_tokens=False, padding=True
         ).to(self.accelerator.device)
+
         input_len = inputs.input_ids.shape[1]
-        batch_ids, sparse_mask, attention_mask = self.actor.generate(
+        batch_ids, sparse_mask = self.actor.generate(
             inputs, output_sparse_mask=True
         )
         output_dis = batch_ids[:, input_len:]
@@ -299,8 +302,8 @@ class SamplesGenerator:
             item = {
                 "sequences": batch_ids[i],
                 "input_len": input_len,
-                "sparse_mask": sparse_mask[i],
-                "attention_mask": attention_mask[i][:input_len],
+                "sparse_mask": sparse_mask[i] if sparse_mask is not None else None,
+                "attention_mask": inputs.attention_mask[i],
                 "prompts": batch_prompts[i],
                 "output_texts": output_texts[i],
                 "answers": answers[i],
@@ -347,7 +350,7 @@ class ExperienceMaker:
                     experiences[j].info["clip"] = [1]
                 else:
                     experiences[j].info["clip"] = [0]
-                    
+
                 experiences[j].advantages = (
                     group_advantages[j - i].unsqueeze(0).expand(1, sequence_len)
                 )

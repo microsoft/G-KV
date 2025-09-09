@@ -19,13 +19,21 @@ class Actor(nn.Module):
         rolled_sequences = torch.roll(sequences, shifts=-1, dims=1)
         position_ids = attention_mask.long().cumsum(-1) - 1
         position_ids.masked_fill_(attention_mask == 0, 1)
-        outputs = self.model(
-            sequences,
-            attention_mask,
-            sparse_mask=sparse_mask,
-            position_ids=position_ids,
-            use_cache=False,
-        )
+        if self.args.method == "fullkv":
+            outputs = self.model(
+                sequences,
+                attention_mask,
+                position_ids=position_ids,
+                use_cache=False,
+            )
+        else:
+            outputs = self.model(
+                sequences,
+                attention_mask,
+                sparse_mask=sparse_mask,
+                position_ids=position_ids,
+                use_cache=False,
+            )
 
         outputs["logits"] = outputs["logits"].div_(self.args.temperature)
 
@@ -71,7 +79,9 @@ class Actor(nn.Module):
             }
         outputs = unwrap_model.generate(**batch_input, **sample_args)
         sequences = outputs.sequences
-        sparse_mask = outputs.past_key_values.sparse_mask_cache
-        attention_mask = outputs.past_key_values.attention_mask
+        if self.args.method == "fullkv":
+            sparse_mask = None
+        else:
+            sparse_mask = outputs.past_key_values.sparse_mask_cache
         del outputs
-        return sequences, sparse_mask, attention_mask
+        return sequences, sparse_mask
