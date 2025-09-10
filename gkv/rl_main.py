@@ -125,7 +125,7 @@ if __name__ == "__main__":
         "--method",
         type=str,
         default="score",
-        choices=["score", "sepllm", "streamingllm", "fullkv"],
+        choices=["score", "fullkv"],
     )
     parser.add_argument("--budget", type=int, default=512)
     parser.add_argument("--divide_length", type=int, default=128)
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     parser.add_argument("--record_pos_ids", action="store_true", default=False)
     parser.add_argument("--sink_len", type=int, default=4)
     # train
-    parser.add_argument("--trunk_length", type=int, default=6144)
+    parser.add_argument("--trunk_length", type=int, default=None)
     parser.add_argument("--max_train_steps", type=int, default=1000)
     parser.add_argument("--warmup_ratio", type=float, default=0.05)
     parser.add_argument("--lr_scheduler_type", type=str, default="constant_with_warmup")
