@@ -6,7 +6,7 @@ DATASET_PATH="agentica-org/DeepScaleR-Preview-Dataset"
 
 # train parameters
 LEARNING_RATE=1e-6
-EXP_NAME="qwen7b_rl"
+EXP_NAME="qwen7b_rl_fullkv"
 MAX_TRAIN_STEPS=400
 TRAIN_BATCH_SIZE_PER_GPU=2
 BUDGET=2048
@@ -20,6 +20,7 @@ accelerate launch \
     --dataset_path $DATASET_PATH \
     --max_new_tokens 4096 \
     --learning_rate $LEARNING_RATE \
+    --method fullkv \
     --divide_length 128 \
     --window_size 16 \
     --enable_score_cache \

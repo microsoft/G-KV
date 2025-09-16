@@ -1,6 +1,6 @@
 set -x
 
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=1
 
 DATASET_PATH="zwhe99/amc23"
 # DATASET_PATH="math-ai/aime24"
@@ -40,10 +40,10 @@ DATASET_PATH="zwhe99/amc23"
 
 python3 -m gkv.inference_main \
 --dataset_path $DATASET_PATH \
---model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
+--model_path ./checkpoints/qwen7b_sft_kl/checkpoint-250 \
 --save_path ./outputs/train_qwen_sft_1024.jsonl \
 --max_new_tokens 16384 \
---eval_batch_size 256 \
+--eval_batch_size 128 \
 --method score \
 --divide_length 128 \
 --window_size 16 \

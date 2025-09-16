@@ -230,7 +230,7 @@ class Trainer:
                     add_special_tokens=False,
                     padding=True,
                 ).to(self.accelerator.device)
-                sequences, _, _ = self.actor.generate(
+                sequences, _ = self.actor.generate(
                     inputs,
                     do_sample=self.args.eval_do_sample,
                     temperature=self.args.eval_temperature,

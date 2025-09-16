@@ -24,10 +24,4 @@ class SepLLMKV:
         sep_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ):
-        if key_states.shape[-2] < self.window_size + self.sink_len + self.budget:
-            return key_states, value_states, None
-
-        if torch.all(attention_mask != 0):
-            pass
-        else:
-            pass
+        raise NotImplementedError("SepLLMKV is not implemented yet")

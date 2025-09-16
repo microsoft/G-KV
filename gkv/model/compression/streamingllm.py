@@ -26,8 +26,14 @@ class StreamingLLMKV:
         key_states: (bsz, num_kv_heads, kv_cache_len, head_dim)
         value_states: (bsz, num_kv_heads, kv_cache_len, head_dim)
         """
-        if key_states.shape[-2] < self.window_size + self.sink_len:
-            return key_states, value_states, None
+        kv_cache_len = key_states.shape[-2]
+        if kv_cache_len < self.window_size + self.sink_len:
+            return key_states, value_states, None, None
+
+        assert attention_mask is not None, "attention_mask is required"
+
+        if attention_mask.shape[-1] > kv_cache_len:
+            attention_mask = attention_mask[:, -kv_cache_len:]
 
         if torch.all(attention_mask != 0):
             sink_key_states = key_states[:, :, : self.sink_len, :]
@@ -53,5 +59,5 @@ class StreamingLLMKV:
             )
             key_states = key_states.gather(dim=2, index=keep_indices)
             value_states = value_states.gather(dim=2, index=keep_indices)
-            
-        return key_states, value_states, None
+
+        return key_states, value_states, None, None

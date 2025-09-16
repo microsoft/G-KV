@@ -64,8 +64,6 @@ class ScoreBasedKV:
         head_dim = query_states.shape[-1]
         kv_cache_len = key_states.shape[-2]
 
-        if attention_mask is not None and attention_mask.shape[-1] > kv_cache_len:
-            attention_mask = attention_mask[:, -kv_cache_len:]
 
         if self.compress_mode == "budget":
             budget = self.budget
@@ -76,10 +74,13 @@ class ScoreBasedKV:
                 budget = self.budget
         else:
             raise ValueError("compress mode must be budget or ratio")
+        
 
         if kv_cache_len < budget:
             return key_states, value_states, pos_ids_cache, score_cache
         else:
+            if attention_mask is not None and attention_mask.shape[-1] > kv_cache_len:
+                attention_mask = attention_mask[:, -kv_cache_len:]
             # shape: (bsz, num_kv_heads, len, len)
             attn_scores = compute_attention_scores(
                 query_states, key_states, attention_mask=attention_mask

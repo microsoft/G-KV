@@ -28,6 +28,10 @@ def collate_fn(batch, tokenizer, max_output_len: Optional[int] = None):
         output_ids[i] + [tokenizer.eos_token_id] for i in range(len(output_ids))
     ]
     input_len = max([len(prompt_ids[i]) for i in range(len(prompt_ids))])
+    
+    if max_output_len is not None:
+        max_output_len = max(max_output_len - input_len, 0)
+
     output_len = max(len(output_ids[i]) for i in range(len(output_ids)))
     res_dict = {
         "input_ids": [],
@@ -86,11 +90,10 @@ def get_dataloader(dataset_path, tokenizer, max_output_len: Optional[int] = None
     return dataloader
 
 
-def get_eval_dataloader(
-    dataset_path, tokenizer, eval_split_len=32, world_size=1
-):
-    
+def get_eval_dataloader(dataset_path, tokenizer, eval_split_len=32, world_size=1):
+
     from .rl_dataloader import collate_fn
+
     dataset = load_dataset(dataset_path, split="train")
     dataset = dataset.shuffle(seed=42)
     eval_dataset = dataset.select(range(0, eval_split_len))

@@ -120,7 +120,6 @@ class Trainer:
                     )
                     del output
                 torch.cuda.empty_cache()
-                torch.distributed.barrier()
                 loss = loss / self.gradient_accumulation_steps
                 self.accelerator.backward(loss)
                 if self.args.use_kl_loss:
