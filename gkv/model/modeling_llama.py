@@ -100,6 +100,7 @@ class LlamaAttention(nn.Module):
         self.budget = getattr(config.method_config, "budget", 512)
         self.alpha = getattr(config.method_config, "alpha", 0.8)
         self.mix_lambda = getattr(config.method_config, "mix_lambda", 0.5)
+        self.method = getattr(config.method_config, "method", "score")
         # =============== New logic end =================
 
     def forward(
@@ -140,26 +141,30 @@ class LlamaAttention(nn.Module):
                     past_key_value.query_cache = {}
                 if self.layer_idx not in past_key_value.query_cache:
                     # prefill stage, initial query cache
-                    past_key_value.query_cache[self.layer_idx] = query_states[
-                        :, :, -self.config.method_config["window_size"] :, :
-                    ]
+                    if self.method == "score":
+                        past_key_value.query_cache[self.layer_idx] = query_states[
+                            :, :, -self.config.method_config["window_size"] :, :
+                        ]
+                    else:
+                        past_key_value.query_cache[self.layer_idx] = None
                 else:
                     # decoding stage, add new query to cache
-                    past_key_value.query_cache[self.layer_idx] = torch.cat(
-                        (past_key_value.query_cache[self.layer_idx], query_states),
-                        dim=2,
-                    )
-                    # keep only window_size most recent queries
-                    window_size = self.config.method_config["window_size"]
-                    if (
-                        past_key_value.query_cache[self.layer_idx].shape[-2]
-                        > window_size
-                    ):
-                        past_key_value.query_cache[self.layer_idx] = (
-                            past_key_value.query_cache[self.layer_idx][
-                                :, :, -window_size:, :
-                            ]
+                    if self.method == "score":
+                        past_key_value.query_cache[self.layer_idx] = torch.cat(
+                            (past_key_value.query_cache[self.layer_idx], query_states),
+                            dim=2,
                         )
+                        # keep only window_size most recent queries
+                        window_size = self.config.method_config["window_size"]
+                        if (
+                            past_key_value.query_cache[self.layer_idx].shape[-2]
+                            > window_size
+                        ):
+                            past_key_value.query_cache[self.layer_idx] = (
+                                past_key_value.query_cache[self.layer_idx][
+                                    :, :, -window_size:, :
+                                ]
+                            )
                 # =============== end query cache ================
                 if hasattr(past_key_value, "pos_ids_cache"):
                     pos_ids_cache = past_key_value.pos_ids_cache[self.layer_idx]

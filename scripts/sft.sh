@@ -1,7 +1,7 @@
 set -x
 
 MODEL_NAME="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-DATASET_PATH="mqliao/gkv_distill_math_27k"
+DATASET_PATH="gkv_distill_math_27k"
 EVAL_DATASET_PATH="agentica-org/DeepScaleR-Preview-Dataset"
 
 
