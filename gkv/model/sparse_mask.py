@@ -1,3 +1,4 @@
+from numpy import True_
 import torch
 from packaging.version import Version
 from typing import Optional, List, Tuple
@@ -267,10 +268,8 @@ def build_sparse_mask_from_pos_cache(
         col_indices = pos_cache.unsqueeze(2)  # [bsz, kv_head, 1, num_kept]
         col_indices = col_indices.expand(-1, -1, end_raw - statrt_raw, -1)
         sparse_mask.scatter_(3, col_indices, True)
-        sparse_mask[:, :, :, statrt_raw:] = True
-        # 创建一个临时变量来存储结果，避免内存冲突
+        sparse_mask[:, :, :, statrt_raw:] = True_
         sparse_mask &= causal_mask[:, :, statrt_raw:end_raw, :]
-        # 使用临时变量来更新 causal_mask
         causal_mask[:, :, statrt_raw:end_raw, :] = sparse_mask
         end_raw = statrt_raw
     return causal_mask
