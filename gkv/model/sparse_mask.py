@@ -2,7 +2,7 @@ from numpy import True_
 import torch
 from packaging.version import Version
 from typing import Optional, List, Tuple
-from .utils import cal_similarity, compute_attention_scores
+from gkv.utils.compression_score import cal_similarity_triton, compute_attention_scores
 
 if Version(torch.__version__) >= Version("2.5.0"):
     from torch.nn.attention.flex_attention import (
@@ -177,7 +177,7 @@ def build_sparse_mask(
             query_cache = query_states[:, :, window_start:window_end, :]
             window_attention_mask = attention_mask[
                 :, window_end - key_cache.shape[2] : window_end
-            ]
+            ].contiguous()
             # get attention scores
             attn_scores = compute_attention_scores(
                 query_cache, key_cache, attention_mask=window_attention_mask
@@ -191,7 +191,9 @@ def build_sparse_mask(
                 )
                 final_score = torch.max(old_score * alpha, final_score)
 
-            similarity_cos = cal_similarity(key_cache)
+            similarity_cos = cal_similarity_triton(
+                key_cache, attention_mask=window_attention_mask
+            )
             similarity_cos = similarity_cos.div_(
                 similarity_cos.max(dim=-1, keepdim=True).values
             )[:, :-window_size]
