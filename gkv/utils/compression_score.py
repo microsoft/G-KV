@@ -135,6 +135,9 @@ def similarity_score_kernel(
             block_shape=(BLOCK_M, 1),
             order=(1, 0),
         )
+        s = tl.load(similarity_ptr, boundary_check=(0,))
+        raw_dtype = s.dtype
+        s = s.to(tl.float32)
         for n_offset in range(num_pad, seq_len, BLOCK_N):
             kn_ptr = tl.make_block_ptr(
                 base=key_states_ptr + batch_idx * stride_kb + head_idx * stride_kh,
@@ -192,10 +195,8 @@ def similarity_score_kernel(
             tl.store(zo_ptr, last_threshold_mask, boundary_check=(1,))
             # reduce cosine similarity
             similarity = tl.sum(similarity, axis=1, keep_dims=True)
-            s = tl.load(similarity_ptr, boundary_check=(0,))
-            similarity = similarity + s
-            similarity = similarity.to(s.dtype)
-            tl.store(similarity_ptr, similarity, boundary_check=(0,))
+            s = similarity + s
+        tl.store(similarity_ptr, s.to(raw_dtype), boundary_check=(0,))
 
 
 def cal_similarity_triton(
