@@ -10,6 +10,16 @@
 *.userosscache
 *.sln.docstates
 *.env
+.gitignore
+.idea/
+.vscode/
+checkpoints/
+info/
+jupyter/
+outputs/
+pdf/
+utils/
+gpu_manage.py
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

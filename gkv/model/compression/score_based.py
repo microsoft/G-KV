@@ -3,7 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 import math
-from gkv.utils.compression_score import compute_attention_scores, cal_similarity
+from gkv.utils.compression_score import (
+    compute_attention_scores,
+    cal_similarity_raw,
+    cal_similarity_triton,
+)
 from gkv.model.sparse_mask import expand_sparse_mask
 
 
@@ -24,6 +28,7 @@ class ScoreBasedKV:
         alpha=0.8,
         compress_mode="budget",
         compress_ratio=0.2,
+        triton_similarity=True,
         **kwargs,
     ):
         assert budget - window_size > 0, "budget must be greater than window_size"
@@ -42,6 +47,7 @@ class ScoreBasedKV:
         self.disable_norm = disable_norm
         self.compress_mode = compress_mode
         self.compress_ratio = compress_ratio
+        self.triton_similarity = triton_similarity
 
     def update_kv(
         self,
@@ -64,7 +70,6 @@ class ScoreBasedKV:
         head_dim = query_states.shape[-1]
         kv_cache_len = key_states.shape[-2]
 
-
         if self.compress_mode == "budget":
             budget = self.budget
         elif self.compress_mode == "ratio":
@@ -74,13 +79,12 @@ class ScoreBasedKV:
                 budget = self.budget
         else:
             raise ValueError("compress mode must be budget or ratio")
-        
 
         if kv_cache_len < budget:
             return key_states, value_states, pos_ids_cache, score_cache
         else:
             if attention_mask is not None and attention_mask.shape[-1] > kv_cache_len:
-                attention_mask = attention_mask[:, -kv_cache_len:]
+                attention_mask = attention_mask[:, -kv_cache_len:].contiguous()
             # shape: (bsz, num_kv_heads, len, len)
             attn_scores = compute_attention_scores(
                 query_states, key_states, attention_mask=attention_mask
@@ -123,10 +127,16 @@ class ScoreBasedKV:
                 pooled_score = final_score
 
             if self.suppressing_redundancy:
-                similarity_cos = cal_similarity(
-                    key_states,
-                    retain_ratio=self.retain_ratio,
-                )[:, : -self.window_size]
+                if self.triton_similarity:
+                    similarity_cos = cal_similarity_triton(
+                        key_states,
+                        attention_mask=attention_mask,
+                    )[:, :, : -self.window_size]
+                else:
+                    similarity_cos = cal_similarity_raw(
+                        key_states,
+                        retain_ratio=self.retain_ratio,
+                    )[:, : -self.window_size]
 
                 if self.enable_score_cache and not self.disable_norm:
                     # disable normalization for the original similarity score
