@@ -113,6 +113,9 @@ class ScoreBasedKV:
                     )
                 elif self.smooth_method == "max":
                     final_score = torch.max(old_score * self.alpha, final_score)
+                elif self.smooth_method == "sum":
+                    # score function for H2O
+                    final_score = old_score + final_score
                 else:
                     raise ValueError("smooth method must be mean or max")
 

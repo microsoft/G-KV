@@ -25,6 +25,12 @@ set -x
 # --sink_len 4
 # --window_size 512
 
+# H2O
+# --method score
+# --enable_score_cache
+# --smooth_method sum
+# --window_size 1
+
 # FullKV
 # --method fullkv
 

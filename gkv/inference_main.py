@@ -316,7 +316,7 @@ if __name__ == "__main__":
     # G-KV
     parser.add_argument("--enable_score_cache", action="store_true", default=False)
     parser.add_argument(
-        "--smooth_method", type=str, default="max", choices=["mean", "max"]
+        "--smooth_method", type=str, default="max", choices=["mean", "max", "sum"]
     )
     parser.add_argument("--alpha", type=float, default=0.8)
     parser.add_argument("--disable_norm", action="store_true", default=False)
