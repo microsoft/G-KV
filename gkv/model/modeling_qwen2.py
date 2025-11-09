@@ -86,12 +86,12 @@ class Qwen2Attention(nn.Module):
         )
         # =============== New logic start ===============
         self.kv_cluster = KV_COMPRESSION_MAP[config.method](**config.method_config)
-        self.divide_length = getattr(config.method_config, "divide_length", 128)
-        self.window_size = getattr(config.method_config, "window_size", 16)
-        self.budget = getattr(config.method_config, "budget", 512)
-        self.alpha = getattr(config.method_config, "alpha", 0.8)
-        self.mix_lambda = getattr(config.method_config, "mix_lambda", 0.5)
-        self.method = getattr(config.method_config, "method", "score")
+        self.divide_length = config.method_config.get("divide_length", 128)
+        self.window_size = config.method_config.get("window_size", 16)
+        self.budget = config.method_config.get("budget", 512)
+        self.alpha = config.method_config.get("alpha", 0.8)
+        self.mix_lambda = config.method_config.get("mix_lambda", 0.5)
+        self.method = config.method_config.get("method", "score")
         # =============== New logic end =================
 
     def forward(
@@ -137,6 +137,19 @@ class Qwen2Attention(nn.Module):
                         past_key_value.query_cache[self.layer_idx] = query_states[
                             :, :, -self.config.method_config["window_size"] :, :
                         ]
+                        if (
+                            self.config.method_config["enable_score_cache"]
+                            and self.config.method_config["smooth_method"] == "sum"
+                            and self.alpha == 1
+                        ):
+                            # h2o initial score cache
+                            score_cache = self.kv_cluster.initial_score_cache(
+                                key_states=key_states,
+                                query_states=query_states,
+                                attention_mask=attention_mask,
+                            )
+                            past_key_value.score_cache[self.layer_idx] = score_cache
+
                     else:
                         past_key_value.query_cache[self.layer_idx] = None
                 else:

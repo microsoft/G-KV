@@ -49,6 +49,21 @@ class ScoreBasedKV:
         self.compress_ratio = compress_ratio
         self.triton_similarity = triton_similarity
 
+    def initial_score_cache(
+        self,
+        key_states: torch.Tensor,
+        query_states: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ):
+        score_cache = compute_attention_scores(
+            query_states, key_states, attention_mask=attention_mask, remove_query=False
+        )
+        # Replace NaN values in score_cache with 0
+        score_cache = torch.nan_to_num(score_cache, nan=0.0)
+        score_cache = score_cache.sum(dim=2)
+
+        return score_cache
+
     def update_kv(
         self,
         key_states: Optional[torch.Tensor] = None,
@@ -104,9 +119,19 @@ class ScoreBasedKV:
             if self.enable_score_cache and score_cache is not None and self.alpha > 0:
                 # cached score shape: (bsz, num_kv_heads, cached_score_len)
                 cached_score_len = score_cache.shape[-1]
-                old_score = torch.cat(
-                    [score_cache, final_score[:, :, cached_score_len:]], dim=-1
-                )
+                if not self.smooth_method == "sum":
+                    old_score = torch.cat(
+                        [score_cache, final_score[:, :, cached_score_len:]], dim=-1
+                    )
+                else:
+                    zero_pad_len = final_score.shape[-1] - cached_score_len
+                    zero_pad = torch.zeros(
+                        (score_cache.shape[0], score_cache.shape[1], zero_pad_len),
+                        device=score_cache.device,
+                        dtype=score_cache.dtype,
+                    )
+                    old_score = torch.cat([score_cache, zero_pad], dim=-1)
+
                 if self.smooth_method == "mean":
                     final_score = old_score * self.alpha + final_score * (
                         1 - self.alpha
@@ -115,7 +140,7 @@ class ScoreBasedKV:
                     final_score = torch.max(old_score * self.alpha, final_score)
                 elif self.smooth_method == "sum":
                     # score function for H2O
-                    final_score = old_score + final_score
+                    final_score = old_score * self.alpha + final_score
                 else:
                     raise ValueError("smooth method must be mean or max")
 
@@ -172,14 +197,15 @@ class ScoreBasedKV:
                 if unfinished_sequences is not None and score_cache is not None:
                     # keep score of the last compressed tokens for analyze
                     bsz, num_heads, seq_len = new_cached_score.shape
-                    mask = (
-                        (unfinished_sequences == 0)
-                        .view(bsz, 1, 1)
-                        .expand(bsz, num_heads, seq_len)
-                    )
-                    new_cached_score = torch.where(
-                        mask, score_cache[:, :, :seq_len], new_cached_score
-                    )
+                    if seq_len <= score_cache.shape[-1]:
+                        mask = (
+                            (unfinished_sequences == 0)
+                            .view(bsz, 1, 1)
+                            .expand(bsz, num_heads, seq_len)
+                        )
+                        new_cached_score = torch.where(
+                            mask, score_cache[:, :, :seq_len], new_cached_score
+                        )
                 score_cache = new_cached_score
 
             if pos_ids_cache is not None:

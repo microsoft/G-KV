@@ -11,7 +11,7 @@ def cal_similarity_raw(
     retain_direction="last",
 ):
     """
-    raw implementation of similarity score 
+    raw implementation of similarity score
     from https://github.com/Zefan-Cai/R-KV
     """
     k = key_states[0]
@@ -203,6 +203,7 @@ def cal_similarity_triton(
     key_states: torch.Tensor,
     attention_mask: torch.Tensor,
     threshold=0.5,
+    temperature=1.0,
 ):
     """
     calculate cosine similarity score between key states
@@ -255,14 +256,17 @@ def cal_similarity_triton(
     )
 
     seq_len = attention_mask.sum(dim=-1, keepdim=True).unsqueeze(-1)
-    similarity_cos.div_(seq_len)
+    similarity_cos.div_(seq_len * temperature)
+    similarity_cos = similarity_cos.masked_fill(
+        (attention_mask == 0).unsqueeze(1), -float("inf")
+    )
 
     return torch.softmax(similarity_cos, dim=-1)
 
 
 @torch.no_grad()
 def compute_attention_scores(
-    query_states, key_states, pooling="max", attention_mask=None
+    query_states, key_states, pooling="max", attention_mask=None, remove_query=True
 ):
     """
     query_states: (bsz, q_heads, q_len, head_dim)
@@ -334,4 +338,7 @@ def compute_attention_scores(
         attn_scores = attn_scores.max(dim=2).values
     else:
         raise ValueError("Pooling method not supported")
-    return attn_scores[:, :, :, :-q_len]
+    if remove_query:
+        return attn_scores[:, :, :, :-q_len]
+    else:
+        return attn_scores
