@@ -16,29 +16,23 @@ import json
 def main(args):
     model = LanguageModelStore[args.model]
     benchmark, format_prompt = load_lcb_codegeneration_dataset(args)
-    # debug
-    benchmark = benchmark[:8]
     if not args.method == "fullkv":
         runner = GKVRunner(args, model)
     else:
         runner = VLLMRunner(args, model)
     results: list[list[str]] = runner.run_main(benchmark, format_prompt)
+    save_info = {
+        "outputs": results,
+    }
+    if not args.method == "fullkv":
+        save_info["input_len"] = runner.loginfo["input_len"]
+        save_info["output_len"] = runner.loginfo["output_len"]
+        save_info["method"] = args.method
+        save_info["budget"] = args.budget
+        save_info["window_size"] = args.window_size
 
-    combined_results = combine_results(args.scenario, results, model)
-
-    save_results = [
-        instance.insert_output(outputs_list, extracted_list)
-        for instance, (outputs_list, extracted_list) in zip(benchmark, combined_results)
-    ]
-
-    save_results, combined_results = sort_and_extract_save_results(
-        args.scenario, save_results
-    )
-
-    metrics = get_metrics(args.scenario, args, benchmark, combined_results)
-    graded = extract_instance_results(metrics[1])
-    print(metrics[0]["pass@1"])
-
+    with open(args.save_path, "w") as f:
+        json.dump(save_info, f, indent=4)
 
 
 if __name__ == "__main__":
@@ -47,6 +41,7 @@ if __name__ == "__main__":
         "--model",
         type=str,
     )
+    parser.add_argument("--save_path", type=str, default="outputs/lcb_test.json")
     parser.add_argument(
         "--scenario",
         type=Scenario,
@@ -136,8 +131,9 @@ if __name__ == "__main__":
     args.max_tokens = args.max_new_tokens
     args.model_name = args.model
     args.stop = None
-    args.num_process_evaluate = 16
+    args.num_process_evaluate = 32
     args.timeout = 6
+    args.local_model_path = None
     if not args.method == "fullkv":
         args.use_cache = True
         args.cache_batch_size = args.batch_size
