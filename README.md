@@ -38,3 +38,11 @@ Train (RL)
 ```
 bash scripts/rl.sh
 ```
+
+evaluate on LiveCodeBench
+
+```
+python datasets/lcb_precess.py
+
+bash scripts/lcb_eval.sh
+```
