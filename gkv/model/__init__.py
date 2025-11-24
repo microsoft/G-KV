@@ -12,5 +12,16 @@ class AutoModelForCausalLM:
             return LlamaForCausalLM.from_pretrained(
                 model_name, config=config, *args, **kwargs
             )
+        elif config.model_type == "qwen3":
+            from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention,Qwen3ForCausalLM
+            from .modeling_qwen3 import qwen3_attn_init, forward
+            print("qwen3 only support inference")
+
+            Qwen3Attention.__init__ = qwen3_attn_init
+            Qwen3Attention.forward = forward
+            return Qwen3ForCausalLM.from_pretrained(
+                model_name, config=config, *args, **kwargs
+            )
+
         else:
             raise ValueError(f"Unsupported method: {config.method}")

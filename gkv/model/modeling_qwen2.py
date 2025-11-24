@@ -40,13 +40,13 @@ from torch.nn.attention.flex_attention import (
     flex_attention,
     BlockMask,
 )
+from collections import defaultdict
 from gkv.model.sparse_mask import (
     build_block_mask,
     build_SepLLM_mask,
     build_StreamingLLM_mask,
     build_sparse_mask,
 )
-
 
 # flex_attention = torch.compile(flex_attention, dynamic=False)
 KV_COMPRESSION_MAP = {

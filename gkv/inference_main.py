@@ -165,6 +165,7 @@ def main(args):
             "smooth_method": args.smooth_method,
             "alpha": args.alpha,
             "disable_norm": args.disable_norm,
+            "attention_shift_indicator": args.attention_shift_indicator,
         },
         "record_pos_ids": args.record_pos_ids,
         "return_sparse_mask": False,
@@ -313,6 +314,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--retain_direction", type=str, default="last", choices=["last", "first"]
     )
+    # CAKE
+    parser.add_argument("--attention_shift_indicator", action="store_true", default=False)
     # G-KV
     parser.add_argument("--enable_score_cache", action="store_true", default=False)
     parser.add_argument(

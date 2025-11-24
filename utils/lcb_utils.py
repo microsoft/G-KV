@@ -5,6 +5,7 @@ from lcb_runner.prompts.code_generation import format_prompt_generation
 from transformers import AutoConfig, AutoTokenizer
 from gkv.inference_main import generate
 import torch
+from collections import defaultdict
 
 
 def load_code_generation_dataset_not_fast() -> list[CodeGenerationProblem]:
@@ -76,21 +77,28 @@ class GKVRunner(BaseRunner):
             "pad_token_id": self.tokenizer.pad_token_id,
         }
         self.sample_n = args.n
+        self.loginfo = defaultdict(list)
 
     def _run_single(self, prompt: str) -> list[str]:
         pass
 
     def run_batch(self, prompts: list[str]) -> list[list[str]]:
         outputs = [[] for _ in prompts]
+        input_len = [[] for _ in prompts]
+        output_len = [[] for _ in prompts]
         indices = []
         repeated_prompts = []
         for i in range(len(prompts)):
             indices.extend([i] * self.sample_n)
             repeated_prompts.extend([prompts[i]] * self.sample_n)
 
-        prefill_tokens, output_tokens, output_text, time_per_batch, pos_ids = generate(
+        prefill_tokens, output_tokens, output_text, _, _ = generate(
             self.llm, self.tokenizer, repeated_prompts, self.sampling_params
         )
         for i, output in zip(indices, output_text):
             outputs[i].append(output)
+            input_len[i].append(prefill_tokens[i])
+            output_len[i].append(output_tokens[i])
+        self.loginfo["input_len"].extend(input_len)
+        self.loginfo["output_len"].extend(output_len)
         return outputs

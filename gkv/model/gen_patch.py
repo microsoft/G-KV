@@ -20,6 +20,8 @@ from gkv.model.sparse_mask import build_causal_mask
 from gkv.model.sparse_mask import expand_sparse_mask
 from gkv.model.sparse_mask import build_sparse_mask_from_pos_cache
 
+from time import time
+
 
 def _sample(
     self,
@@ -320,7 +322,7 @@ def _sample(
                 attention_mask,
                 self.config.num_key_value_heads,
             ).cpu()
-            for i in range(bsz): # per layer sparse mask for each input
+            for i in range(bsz):  # per layer sparse mask for each input
                 sparse_mask_list[i].append(layer_sparse_mask[i])
             del layer_sparse_mask
         for i in range(bsz):

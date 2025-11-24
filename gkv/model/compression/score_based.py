@@ -29,6 +29,8 @@ class ScoreBasedKV:
         compress_mode="budget",
         compress_ratio=0.2,
         triton_similarity=True,
+        attention_shift_indicator=False,
+        gamma=200,
         **kwargs,
     ):
         assert budget - window_size > 0, "budget must be greater than window_size"
@@ -48,6 +50,8 @@ class ScoreBasedKV:
         self.compress_mode = compress_mode
         self.compress_ratio = compress_ratio
         self.triton_similarity = triton_similarity
+        self.attention_shift_indicator = attention_shift_indicator
+        self.gamma = gamma
 
     def initial_score_cache(
         self,
@@ -110,6 +114,10 @@ class ScoreBasedKV:
             # shape: (bsz, num_kv_heads, len)
             final_score = attn_scores.mean(dim=2)
 
+            if self.attention_shift_indicator:
+                std = attn_scores.std(dim=2)
+                final_score += self.gamma * std
+
             if self.enable_score_cache and not self.disable_norm:
                 # normalize final_score
                 final_score = final_score.div_(
@@ -124,13 +132,16 @@ class ScoreBasedKV:
                         [score_cache, final_score[:, :, cached_score_len:]], dim=-1
                     )
                 else:
-                    zero_pad_len = final_score.shape[-1] - cached_score_len
-                    zero_pad = torch.zeros(
-                        (score_cache.shape[0], score_cache.shape[1], zero_pad_len),
-                        device=score_cache.device,
-                        dtype=score_cache.dtype,
-                    )
-                    old_score = torch.cat([score_cache, zero_pad], dim=-1)
+                    if cached_score_len < final_score.shape[-1]:
+                        zero_pad_len = final_score.shape[-1] - cached_score_len
+                        zero_pad = torch.zeros(
+                            (score_cache.shape[0], score_cache.shape[1], zero_pad_len),
+                            device=score_cache.device,
+                            dtype=score_cache.dtype,
+                        )
+                        old_score = torch.cat([score_cache, zero_pad], dim=-1)
+                    else:
+                        old_score = score_cache
 
                 if self.smooth_method == "mean":
                     final_score = old_score * self.alpha + final_score * (

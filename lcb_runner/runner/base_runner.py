@@ -53,7 +53,7 @@ class BaseRunner(ABC):
         elif isinstance(prompt, tuple):
             prompt_cache = prompt[0] + json.dumps(prompt[1])
         else:
-            prompt_cache = prompt      
+            prompt_cache = prompt
 
         if cache is not None and prompt_cache in cache:
             if len(cache[prompt_cache]) == args.n:
@@ -110,8 +110,8 @@ class BaseRunner(ABC):
     ) -> list[list[str]]:
         if self.args.use_cache:
             outputs = []
-            batch_size = self.args.cache_batch_size
-            for i in range(0, len(prompts), batch_size):
+            batch_size = self.args.cache_batch_size // self.args.n
+            for i in tqdm(range(0, len(prompts), batch_size)):
                 batch = prompts[i : i + batch_size]
                 batch_outputs = self.run_batch(batch)
                 outputs.extend(batch_outputs)
@@ -120,7 +120,9 @@ class BaseRunner(ABC):
             outputs = self.run_batch(prompts)
         return outputs
 
-    def run_main_repair(self, benchmark: list, format_prompt: callable) -> list[list[str]]:
+    def run_main_repair(
+        self, benchmark: list, format_prompt: callable
+    ) -> list[list[str]]:
         assert self.args.n == 1
         with open(
             f"output/{self.model.model_repr}/{Scenario.codegeneration}_{self.args.codegen_n}_{self.args.temperature}_eval_all.json"
@@ -128,8 +130,7 @@ class BaseRunner(ABC):
             check_metadata_list = json.load(f)
 
         outputs = [
-            [None for _ in range(self.args.codegen_n)]
-            for _ in range(len(benchmark))
+            [None for _ in range(self.args.codegen_n)] for _ in range(len(benchmark))
         ]
         prompts = []
         prompt_index_to_question_idx = {}
@@ -138,8 +139,8 @@ class BaseRunner(ABC):
 
         for problem_idx, problem in enumerate(benchmark):
             for check_metadata_idx, check_metadata in enumerate(check_metadata_list):
-                if problem.question_id == check_metadata['question_id']:
-                    count += 1 
+                if problem.question_id == check_metadata["question_id"]:
+                    count += 1
                     question_content = check_metadata["question_content"]
                     code_list = check_metadata["code_list"]
                     output_list = check_metadata["output_list"]
@@ -160,7 +161,7 @@ class BaseRunner(ABC):
                         prompt_index_to_question_idx[len(prompts) - 1] = problem_idx
                         prompt_index_to_code_idx[len(prompts) - 1] = code_idx
 
-        assert len(benchmark)==count, f"{len(benchmark)=}!={count=}"
+        assert len(benchmark) == count, f"{len(benchmark)=}!={count=}"
 
         prompt_outputs = self.prompts_to_outputs(prompts)
         for prompt_idx, output in enumerate(prompt_outputs):
