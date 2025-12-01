@@ -99,7 +99,7 @@ class ScoreBasedKV:
         else:
             raise ValueError("compress mode must be budget or ratio")
 
-        if kv_cache_len < budget:
+        if kv_cache_len <= budget:
             return key_states, value_states, pos_ids_cache, score_cache
         else:
             if attention_mask is not None and attention_mask.shape[-1] > kv_cache_len:
@@ -170,7 +170,8 @@ class ScoreBasedKV:
                     similarity_cos = cal_similarity_triton(
                         key_states,
                         attention_mask=attention_mask,
-                    )[:, :, : -self.window_size]
+                    )
+                    similarity_cos = similarity_cos[:, :, : -self.window_size]
                 else:
                     similarity_cos = cal_similarity_raw(
                         key_states,
