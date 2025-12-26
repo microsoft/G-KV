@@ -1,14 +1,9 @@
 import argparse
+
 from lcb_runner.utils.scenarios import Scenario
 from lcb_runner.lm_styles import LanguageModelStore
 from utils.lcb_utils import load_lcb_codegeneration_dataset, GKVRunner
-from lcb_runner.runner.scenario_router import (
-    combine_results,
-    sort_and_extract_save_results,
-    get_metrics,
-)
 
-from lcb_runner.evaluation import extract_instance_results
 from lcb_runner.runner.vllm_runner import VLLMRunner
 import json
 
