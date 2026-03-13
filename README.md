@@ -46,3 +46,17 @@ python datasets/lcb_precess.py
 
 bash scripts/lcb_eval.sh
 ```
+
+## Citation
+
+```
+@misc{liao2025gkvdecodingtimekvcache,
+      title={G-KV: Decoding-Time KV Cache Eviction with Global Attention}, 
+      author={Mengqi Liao and Lu Wang and Chaoyun Zhang and Zekai Shen and Xiaowei Mao and Si Qin and Qingwei Lin and Saravan Rajmohan and Dongmei Zhang and Huaiyu Wan},
+      year={2025},
+      eprint={2512.00504},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2512.00504}, 
+}
+```
